@@ -580,13 +580,57 @@
 
     const CAP = cap;
     const stride = numPoints > CAP ? Math.ceil(numPoints/CAP) : 1;
-    const maxOut = Math.ceil(numPoints/stride);
+    const meta = `LAS ${versionMajor}.${versionMinor} · формат точки ${pointFormat}`;
+    const ctx = { file, offsetToPointData, pointRecordLength, numPoints, colorOffset, xScale,yScale,zScale,xOffset,yOffset,zOffset, onProgress };
 
+    let result;
+    if(file.isRemote && file.supportsRange && stride>1){
+      // по сети: скачиваем не файл целиком, а только нужный объём — равномерно
+      // расставленные блоки по всей длине файла, а внутри блока берём все точки подряд
+      result = await readLASBlockSampled(ctx, CAP);
+    } else {
+      // локальный файл или без Range: диск читать целиком дёшево — сканируем всё
+      // последовательно и прореживаем на лету
+      result = await readLASFullScan(ctx, stride, CAP);
+    }
+    if(result.count===0) throw new Error('Не удалось извлечь ни одной точки — возможно, файл повреждён.');
+    return {
+      count: result.count, positions: result.positions, colors: result.colors,
+      intensity: result.intensity, intensityRange: result.intensityRange,
+      meta, totalPoints: numPoints, decimated: result.count < numPoints
+    };
+  }
+
+  function extractRecordInto(dvChunk, base, chunkLen, o, positions, colors, intensity, colorOffset, xScale,yScale,zScale,xOffset,yOffset,zOffset){
+    const xi = dvChunk.getInt32(base, true);
+    const yi = dvChunk.getInt32(base+4, true);
+    const zi = dvChunk.getInt32(base+8, true);
+    positions[o*3]   = xi*xScale + xOffset;
+    positions[o*3+1] = yi*yScale + yOffset;
+    positions[o*3+2] = zi*zScale + zOffset;
+    let intVal = 0;
+    if(base+14<=chunkLen) intVal = dvChunk.getUint16(base+12, true);
+    intensity[o] = intVal;
+    if(colors && colorOffset && base+colorOffset+6<=chunkLen){
+      const r = dvChunk.getUint16(base+colorOffset, true);
+      const g = dvChunk.getUint16(base+colorOffset+2, true);
+      const b = dvChunk.getUint16(base+colorOffset+4, true);
+      colors[o*3]   = r>255 ? r/65535 : r/255;
+      colors[o*3+1] = g>255 ? g/65535 : g/255;
+      colors[o*3+2] = b>255 ? b/65535 : b/255;
+    }
+    return intVal;
+  }
+
+  // ---- путь 1: полное последовательное сканирование (локальные файлы) ----
+  async function readLASFullScan(ctx, stride, CAP){
+    const { file, offsetToPointData, pointRecordLength, numPoints, colorOffset,
+      xScale,yScale,zScale,xOffset,yOffset,zOffset, onProgress } = ctx;
+    const maxOut = Math.ceil(numPoints/stride);
     const positions = new Float64Array(maxOut*3);
-    let colors = colorOffset ? new Float32Array(maxOut*3) : null;
+    const colors = colorOffset ? new Float32Array(maxOut*3) : null;
     const intensity = new Float32Array(maxOut);
 
-    // читаем точки блоками по ~48 МБ, а не весь файл разом
     const CHUNK_BYTES = 48*1024*1024;
     const recordsPerChunk = Math.max(1, Math.floor(CHUNK_BYTES/pointRecordLength));
 
@@ -595,51 +639,69 @@
       const recEnd = Math.min(numPoints, recStart+recordsPerChunk);
       const byteStart = offsetToPointData + recStart*pointRecordLength;
       if(byteStart >= file.size) break;
-      const byteEndWanted = offsetToPointData + recEnd*pointRecordLength;
-      const byteEnd = Math.min(byteEndWanted, file.size);
+      const byteEnd = Math.min(offsetToPointData + recEnd*pointRecordLength, file.size);
 
       let chunkBuf;
-      try{
-        chunkBuf = await readFileSlice(file, byteStart, byteEnd);
-      }catch(e){
-        throw new Error('Не удалось прочитать часть файла (возможно, не хватает памяти устройства). Попробуйте на компьютере вместо телефона.');
-      }
+      try{ chunkBuf = await readFileSlice(file, byteStart, byteEnd); }
+      catch(e){ throw new Error('Не удалось прочитать часть файла (возможно, не хватает памяти устройства). Попробуйте на компьютере вместо телефона.'); }
       const dvChunk = new DataView(chunkBuf);
 
       let firstI = recStart % stride === 0 ? recStart : recStart + (stride - (recStart % stride));
       for(let i=firstI; i<recEnd; i+=stride){
         const base = (i-recStart)*pointRecordLength;
         if(base+12 > chunkBuf.byteLength) break;
-        const xi = dvChunk.getInt32(base, true);
-        const yi = dvChunk.getInt32(base+4, true);
-        const zi = dvChunk.getInt32(base+8, true);
-        positions[o*3]   = xi*xScale + xOffset;
-        positions[o*3+1] = yi*yScale + yOffset;
-        positions[o*3+2] = zi*zScale + zOffset;
-        let intVal = 0;
-        if(base+14<=chunkBuf.byteLength) intVal = dvChunk.getUint16(base+12, true);
-        intensity[o] = intVal;
+        const intVal = extractRecordInto(dvChunk, base, chunkBuf.byteLength, o, positions, colors, intensity, colorOffset, xScale,yScale,zScale,xOffset,yOffset,zOffset);
         if(intVal<iMin) iMin=intVal; if(intVal>iMax) iMax=intVal;
-        if(colorOffset && base+colorOffset+6 <= chunkBuf.byteLength){
-          const r = dvChunk.getUint16(base+colorOffset, true);
-          const g = dvChunk.getUint16(base+colorOffset+2, true);
-          const b = dvChunk.getUint16(base+colorOffset+4, true);
-          colors[o*3]   = r>255 ? r/65535 : r/255;
-          colors[o*3+1] = g>255 ? g/65535 : g/255;
-          colors[o*3+2] = b>255 ? b/65535 : b/255;
-        }
         o++;
       }
       if(onProgress) onProgress(recEnd/numPoints);
-      await new Promise(r=>setTimeout(r,0)); // отдаём управление, чтобы UI не подвисал
+      await new Promise(r=>setTimeout(r,0));
     }
-    if(o===0) throw new Error('Не удалось извлечь ни одной точки — возможно, файл повреждён.');
     if(iMin===Infinity){ iMin=0; iMax=1; }
-    return {
-      count:o, positions, colors, intensity, intensityRange:[iMin,iMax],
-      meta:`LAS ${versionMajor}.${versionMinor} · формат точки ${pointFormat}`,
-      totalPoints:numPoints, decimated: stride>1
-    };
+    return { count:o, positions, colors, intensity, intensityRange:[iMin,iMax] };
+  }
+
+  // ---- путь 2: блочная выборка по сети (только нужный объём трафика) ----
+  async function readLASBlockSampled(ctx, CAP){
+    const { file, offsetToPointData, pointRecordLength, numPoints, colorOffset,
+      xScale,yScale,zScale,xOffset,yOffset,zOffset, onProgress } = ctx;
+
+    const MAX_BLOCK_BYTES = 8*1024*1024; // ~8 МБ за один запрос
+    const MIN_BLOCKS = 8, MAX_BLOCKS = 90;
+    const targetBytes = Math.min(numPoints*pointRecordLength, Math.ceil(CAP*pointRecordLength*1.05));
+    let numBlocks = Math.ceil(targetBytes / MAX_BLOCK_BYTES);
+    numBlocks = Math.max(MIN_BLOCKS, Math.min(MAX_BLOCKS, numBlocks, numPoints));
+    const blockRecords = Math.max(1, Math.floor(Math.floor(targetBytes/numBlocks) / pointRecordLength));
+    const blockBytes = blockRecords*pointRecordLength;
+    const usableRecords = Math.max(0, numPoints - blockRecords);
+
+    const maxOut = numBlocks*blockRecords;
+    const positions = new Float64Array(maxOut*3);
+    const colors = colorOffset ? new Float32Array(maxOut*3) : null;
+    const intensity = new Float32Array(maxOut);
+
+    let o = 0, iMin=Infinity, iMax=-Infinity;
+    for(let b=0; b<numBlocks; b++){
+      const startRecord = numBlocks>1 ? Math.round(b*(usableRecords/(numBlocks-1))) : 0;
+      const byteStart = offsetToPointData + startRecord*pointRecordLength;
+      if(byteStart >= file.size) break;
+      const byteEnd = Math.min(byteStart + blockBytes, offsetToPointData + numPoints*pointRecordLength, file.size);
+
+      let buf;
+      try{ buf = await readFileSlice(file, byteStart, byteEnd); }
+      catch(e){ throw new Error('Не удалось скачать часть файла по ссылке. Проверьте соединение и доступность файла.'); }
+      const dvBlock = new DataView(buf);
+      const recordsInBuf = Math.floor(buf.byteLength / pointRecordLength);
+      for(let r=0; r<recordsInBuf; r++){
+        const base = r*pointRecordLength;
+        const intVal = extractRecordInto(dvBlock, base, buf.byteLength, o, positions, colors, intensity, colorOffset, xScale,yScale,zScale,xOffset,yOffset,zOffset);
+        if(intVal<iMin) iMin=intVal; if(intVal>iMax) iMax=intVal;
+        o++;
+      }
+      if(onProgress) onProgress((b+1)/numBlocks);
+    }
+    if(iMin===Infinity){ iMin=0; iMax=1; }
+    return { count:o, positions, colors, intensity, intensityRange:[iMin,iMax] };
   }
 
   /* ===================== BUILD SCENE FROM PARSED DATA ===================== */
@@ -971,6 +1033,17 @@
     return null;
   }
 
+  const HISTORY_KEY = 'pc_recent_v1';
+  function recordHistory(name, src, ext){
+    try{
+      let list = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+      list = list.filter(x=> x.src !== src);
+      list.unshift({ name, src, ext, openedAt: Date.now() });
+      if(list.length>40) list = list.slice(0,40);
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+    }catch(e){ console.warn('Не удалось сохранить историю', e); }
+  }
+
   async function loadFromUrl(url){
     url = url.trim();
     if(!url) return;
@@ -998,6 +1071,7 @@
       lastFile = remote; currentExt = ext;
       buildFromParsed(parsed, lastFileInfo);
       buildQualitySeg();
+      recordHistory(remote.name, remote.url, ext);
     }catch(err){
       console.error(err);
       dropzone.classList.remove('hidden');
