@@ -39,20 +39,21 @@
   #brand .sub{ font-size:12px; color:var(--muted); font-family:var(--mono); }
   #topbar .actions{ display:flex; gap:8px; pointer-events:auto; }
 
-  button{
+  button, #btnCatalog{
     font-family:var(--sans); font-size:13px; font-weight:500;
     background:var(--panel-solid); color:var(--text);
     border:1px solid var(--border); border-radius:6px;
     padding:8px 13px; cursor:pointer;
     display:flex; align-items:center; gap:7px;
     transition:border-color .15s ease, background .15s ease;
+    text-decoration:none;
   }
-  button:hover{ border-color:var(--accent-dim); background:#1f2327; }
+  button:hover, #btnCatalog:hover{ border-color:var(--accent-dim); background:#1f2327; }
   button:active{ background:#191d20; }
   button.primary{ background:var(--accent); color:#1a1200; border-color:var(--accent); font-weight:600; }
   button.primary:hover{ background:#f2933f; }
-  button.ghost{ background:transparent; }
-  button svg{ width:14px; height:14px; flex:none; }
+  button.ghost, #btnCatalog.ghost{ background:transparent; }
+  button svg, #btnCatalog svg{ width:14px; height:14px; flex:none; }
 
   /* ---------- empty state / dropzone ---------- */
   #dropzone{
@@ -82,6 +83,23 @@
   #dropzone p{ font-size:13px; color:var(--muted); margin:0; text-align:center; max-width:320px; line-height:1.6; }
   #dropzone .formats{ font-family:var(--mono); font-size:12px; color:var(--accent2); letter-spacing:0.02em; }
   #fileInput{ display:none; }
+
+  #dzProjects{ display:none; width:min(420px, calc(100vw - 48px)); margin-top:6px; }
+  #dzProjects .dzp-title{ font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:9px; text-align:center; }
+  #dzProjectsList{ display:flex; flex-direction:column; gap:6px; max-height:220px; overflow-y:auto; }
+  .dzp-item{
+    display:flex; align-items:center; gap:10px; text-align:left; cursor:pointer;
+    background:var(--panel-solid); border:1px solid var(--border); border-radius:8px;
+    padding:9px 12px; font-family:var(--sans); font-size:12.5px; color:var(--text);
+    transition:border-color .15s ease, background .15s ease;
+  }
+  .dzp-item:hover{ border-color:var(--accent-dim); background:#1f2327; }
+  .dzp-item .dzp-badge{
+    font-family:var(--mono); font-size:9.5px; letter-spacing:0.04em; color:var(--accent2);
+    background:rgba(111,168,201,0.1); border:1px solid rgba(111,168,201,0.25);
+    padding:1px 6px; border-radius:4px; flex:none;
+  }
+  .dzp-item .dzp-name{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
   /* ---------- HUD panel (bottom-left) ---------- */
   #hud{
@@ -184,6 +202,10 @@
       <div class="sub">LAS · PLY viewer</div>
     </div>
     <div class="actions">
+      <a id="btnCatalog" class="ghost" href="./index2.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h7"/></svg>
+        Проекты
+      </a>
       <button id="btnLink" class="ghost">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 15l6-6M10 6l1-1a4 4 0 0 1 6 6l-1 1M14 18l-1 1a4 4 0 0 1-6-6l1-1"/></svg>
         По ссылке
@@ -208,6 +230,10 @@
     <h1>Перетащите файл сюда</h1>
     <p>Облако точек откроется прямо в браузере — файл никуда не отправляется, всё считается локально.</p>
     <div class="formats">.LAS · .PLY</div>
+    <div id="dzProjects">
+      <div class="dzp-title">Ваши проекты</div>
+      <div id="dzProjectsList"></div>
+    </div>
   </div>
   <input type="file" id="fileInput" accept=".las,.ply">
 
@@ -325,7 +351,19 @@
     controls.radius+= (desired.radius- controls.radius)* DAMPING;
     controls.target.lerp(desired.target, DAMPING);
     updateCamera();
+
+    // LOD включаем, пока идёт активный ввод ИЛИ пока камера ещё "доезжает" по инерции —
+    // иначе после отпускания мыши доводка рендерится полным облаком и подвисает
+    const radiusEps = Math.max(diag*0.0006, 0.0002);
+    const targetEps = Math.max(diag*0.0006, 0.0002);
+    const stillSettling =
+      Math.abs(desired.theta - controls.theta) > 0.0006 ||
+      Math.abs(desired.phi   - controls.phi)   > 0.0006 ||
+      Math.abs(desired.radius- controls.radius)> radiusEps ||
+      controls.target.distanceTo(desired.target) > targetEps;
+    setInteracting(inputActive || stillSettling);
   }
+  let inputActive = false;
   updateCamera();
 
   let dragging = false, panning = false, lastX=0, lastY=0;
@@ -336,10 +374,10 @@
     if(e.button===0){ dragging=true; }
     else if(e.button===2 || e.button===1){ panning=true; }
     lastX=e.clientX; lastY=e.clientY;
-    setInteracting(true);
+    inputActive = true;
   });
-  window.addEventListener('mouseup', ()=>{ dragging=false; panning=false; setInteracting(false); });
-  window.addEventListener('mouseleave', ()=>{ dragging=false; panning=false; setInteracting(false); });
+  window.addEventListener('mouseup', ()=>{ dragging=false; panning=false; inputActive=false; });
+  window.addEventListener('mouseleave', ()=>{ dragging=false; panning=false; inputActive=false; });
   window.addEventListener('mousemove', e=>{
     if(!currentData) return;
     const dx = e.clientX-lastX, dy = e.clientY-lastY;
@@ -363,16 +401,16 @@
     e.preventDefault();
     const factor = Math.exp(e.deltaY*0.0011);
     desired.radius = Math.max(diag*0.002, Math.min(diag*20, desired.radius*factor));
-    setInteracting(true);
+    inputActive = true;
     clearTimeout(wheelIdleTimer);
-    wheelIdleTimer = setTimeout(()=> setInteracting(false), 220);
+    wheelIdleTimer = setTimeout(()=> inputActive=false, 220);
   }, {passive:false});
 
   // basic touch: 1 finger rotate, 2 finger pinch zoom + pan
   let touchMode=null, lastTouchDist=0, lastTouchMidX=0, lastTouchMidY=0;
   dom.addEventListener('touchstart', e=>{
     if(!currentData) return;
-    setInteracting(true);
+    inputActive = true;
     if(e.touches.length===1){ touchMode='rotate'; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY; }
     else if(e.touches.length===2){
       touchMode='pinch';
@@ -406,7 +444,7 @@
       lastTouchMidX = midX; lastTouchMidY = midY;
     }
   }, {passive:true});
-  dom.addEventListener('touchend', ()=>{ touchMode=null; setInteracting(false); });
+  dom.addEventListener('touchend', ()=>{ touchMode=null; inputActive=false; });
 
   window.addEventListener('resize', ()=>{
     camera.aspect = window.innerWidth/window.innerHeight;
@@ -1002,6 +1040,7 @@
   }
 
   dropzone.addEventListener('click', ()=> fileInput.click());
+  document.getElementById('dzProjects').addEventListener('click', e=> e.stopPropagation());
   document.getElementById('btnOpen').addEventListener('click', ()=> fileInput.click());
   fileInput.addEventListener('change', e=>{ if(e.target.files[0]) handleFile(e.target.files[0]); });
 
@@ -1167,6 +1206,44 @@
       showError('Этот файл открыт с диска, у него нет ссылки. Сначала загрузите его в облако с публичным доступом, затем откройте здесь через «По ссылке» — тогда появится ссылка для отправки.');
     }
   });
+
+  // список проектов/недавних прямо на стартовом экране (не нужно уходить на index.html)
+  function initProjectPicker(){
+    let recent = [];
+    try{ recent = JSON.parse(localStorage.getItem('pc_recent_v1') || '[]'); }catch(e){}
+
+    fetch('./projects.json', { cache:'no-store' })
+      .then(r=> r.ok ? r.json() : [])
+      .catch(()=> [])
+      .then(catalog=>{
+        if(!Array.isArray(catalog)) catalog = [];
+        const seen = new Set();
+        const items = [];
+        recent.slice(0,5).forEach(it=>{
+          if(it && it.src && !seen.has(it.src)){ seen.add(it.src); items.push({ name:it.name, src:it.src, ext:it.ext }); }
+        });
+        catalog.forEach(it=>{
+          if(it && it.src && it.name && !seen.has(it.src) && items.length<8){ seen.add(it.src); items.push({ name:it.name, src:it.src, ext:guessExt(it.src) }); }
+        });
+        if(items.length===0) return;
+
+        const list = document.getElementById('dzProjectsList');
+        list.innerHTML = '';
+        items.forEach(it=>{
+          const row = document.createElement('div');
+          row.className = 'dzp-item';
+          row.innerHTML = `<span class="dzp-badge">${(it.ext||'file').toUpperCase()}</span><span class="dzp-name"></span>`;
+          row.querySelector('.dzp-name').textContent = it.name || it.src;
+          row.addEventListener('click', (e)=>{
+            e.stopPropagation();
+            loadFromUrl(it.src);
+          });
+          list.appendChild(row);
+        });
+        document.getElementById('dzProjects').style.display = 'block';
+      });
+  }
+  initProjectPicker();
 
   // автозагрузка, если страница открыта с ?src=... или #src=...
   (function checkInitialUrl(){
