@@ -273,9 +273,20 @@
   viewportEl.appendChild(renderer.domElement);
 
   let pointsObject = null;
+  let lodObject = null; // облегчённая версия (~150k точек) для плавного вращения/зума
   let gridHelper = null;
   let currentData = null; // {positions(centered Float32), rgb, intensity, count, bboxSizeOriginal, minZorig,maxZorig}
   let diag = 10;
+  const LOD_TARGET = 150000;
+  let interacting = false;
+  let wheelIdleTimer = null;
+  function setInteracting(active){
+    if(!lodObject) return; // облако и так маленькое — LOD не нужен
+    if(active===interacting) return;
+    interacting = active;
+    pointsObject.visible = !active;
+    lodObject.visible = active;
+  }
 
   /* ---- simple orbit controls with damping (no external dependency) ---- */
   const controls = {
@@ -325,9 +336,10 @@
     if(e.button===0){ dragging=true; }
     else if(e.button===2 || e.button===1){ panning=true; }
     lastX=e.clientX; lastY=e.clientY;
+    setInteracting(true);
   });
-  window.addEventListener('mouseup', ()=>{ dragging=false; panning=false; });
-  window.addEventListener('mouseleave', ()=>{ dragging=false; panning=false; });
+  window.addEventListener('mouseup', ()=>{ dragging=false; panning=false; setInteracting(false); });
+  window.addEventListener('mouseleave', ()=>{ dragging=false; panning=false; setInteracting(false); });
   window.addEventListener('mousemove', e=>{
     if(!currentData) return;
     const dx = e.clientX-lastX, dy = e.clientY-lastY;
@@ -351,12 +363,16 @@
     e.preventDefault();
     const factor = Math.exp(e.deltaY*0.0011);
     desired.radius = Math.max(diag*0.002, Math.min(diag*20, desired.radius*factor));
+    setInteracting(true);
+    clearTimeout(wheelIdleTimer);
+    wheelIdleTimer = setTimeout(()=> setInteracting(false), 220);
   }, {passive:false});
 
   // basic touch: 1 finger rotate, 2 finger pinch zoom + pan
   let touchMode=null, lastTouchDist=0, lastTouchMidX=0, lastTouchMidY=0;
   dom.addEventListener('touchstart', e=>{
     if(!currentData) return;
+    setInteracting(true);
     if(e.touches.length===1){ touchMode='rotate'; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY; }
     else if(e.touches.length===2){
       touchMode='pinch';
@@ -390,7 +406,7 @@
       lastTouchMidX = midX; lastTouchMidY = midY;
     }
   }, {passive:true});
-  dom.addEventListener('touchend', ()=>{ touchMode=null; });
+  dom.addEventListener('touchend', ()=>{ touchMode=null; setInteracting(false); });
 
   window.addEventListener('resize', ()=>{
     camera.aspect = window.innerWidth/window.innerHeight;
@@ -716,7 +732,9 @@
   function buildFromParsed(parsed, fileInfo, opts){
     opts = opts || {};
     if(pointsObject){ scene.remove(pointsObject); pointsObject.geometry.dispose(); pointsObject.material.dispose(); pointsObject=null; }
+    if(lodObject){ scene.remove(lodObject); lodObject.geometry.dispose(); lodObject.material.dispose(); lodObject=null; }
     if(gridHelper){ scene.remove(gridHelper); gridHelper=null; }
+    interacting = false;
 
     const n = parsed.count;
     const pos64 = parsed.positions;
@@ -749,10 +767,33 @@
     pointsObject = new THREE.Points(geometry, material);
     scene.add(pointsObject);
 
+    // облегчённая версия для плавного вращения/зума на слабых ПК — те же данные,
+    // просто каждая N-ная точка; полный набор точек (n) при этом никуда не девается
+    let lodIndices = null;
+    if(n > LOD_TARGET){
+      const lodStride = Math.ceil(n / LOD_TARGET);
+      const lodCount = Math.ceil(n / lodStride);
+      lodIndices = new Int32Array(lodCount);
+      const lodPos = new Float32Array(lodCount*3);
+      let lo=0;
+      for(let i=0;i<n;i+=lodStride){
+        lodIndices[lo]=i;
+        lodPos[lo*3]=posF32[i*3]; lodPos[lo*3+1]=posF32[i*3+1]; lodPos[lo*3+2]=posF32[i*3+2];
+        lo++;
+      }
+      const lodGeometry = new THREE.BufferGeometry();
+      lodGeometry.setAttribute('position', new THREE.BufferAttribute(lodPos, 3));
+      lodGeometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(lodCount*3), 3));
+      const lodMaterial = new THREE.PointsMaterial({ size: computePointSize(lodCount), vertexColors:true, sizeAttenuation:true });
+      lodObject = new THREE.Points(lodGeometry, lodMaterial);
+      lodObject.visible = false;
+      scene.add(lodObject);
+    }
+
     currentData = {
       n, hasRGB: !!parsed.colors, rgb: parsed.colors,
       hasIntensity: !!parsed.intensity, intensity: parsed.intensity, intensityRange: parsed.intensityRange,
-      swap
+      swap, lodIndices
     };
     // store min/max height in the *rendered* (possibly swapped) frame for the height ramp
     let hMin, hMax;
@@ -839,6 +880,19 @@
       }
     }
     colorAttr.needsUpdate = true;
+
+    // копируем цвета в облегчённую версию по тем же индексам
+    if(lodObject && currentData.lodIndices){
+      const lodColorAttr = lodObject.geometry.getAttribute('color');
+      const lodArr = lodColorAttr.array;
+      const idx = currentData.lodIndices;
+      for(let k=0;k<idx.length;k++){
+        const i = idx[k];
+        lodArr[k*3]=arr[i*3]; lodArr[k*3+1]=arr[i*3+1]; lodArr[k*3+2]=arr[i*3+2];
+      }
+      lodColorAttr.needsUpdate = true;
+    }
+
     updateLegend();
     buildColorModeSeg();
   }
@@ -1165,6 +1219,7 @@
 
   document.getElementById('pointSize').addEventListener('input', ()=>{
     if(pointsObject) pointsObject.material.size = computePointSize();
+    if(lodObject && currentData && currentData.lodIndices) lodObject.material.size = computePointSize(currentData.lodIndices.length);
   });
   document.getElementById('swapAxes').addEventListener('change', ()=>{
     // полный пересчёт геометрии с новой ориентацией осей (не просто визуальный поворот)
