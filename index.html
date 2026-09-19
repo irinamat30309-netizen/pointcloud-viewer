@@ -347,10 +347,15 @@
     <div class="hud-section">
       <div class="slider-row">
         <label>Размер точек</label>
-        <input type="range" id="pointSize" min="1" max="6" step="0.5" value="1">
+        <input type="range" id="pointSize" min="0.4" max="5" step="0.1" value="0.8">
       </div>
       <label class="checkbox-row"><input type="checkbox" id="swapAxes"><span>Поменять оси Y ↔ Z (если модель лежит на боку)</span></label>
       <label class="checkbox-row"><input type="checkbox" id="showGrid" checked><span>Показать сетку</span></label>
+      <label class="checkbox-row"><input type="checkbox" id="clipToggle"><span>Разрез по высоте (убрать потолок)</span></label>
+      <div class="slider-row" id="clipRow" style="display:none;">
+        <label>Уровень</label>
+        <input type="range" id="clipSlider" min="0" max="100" step="0.5" value="100">
+      </div>
       <div style="display:flex; gap:8px; margin-top:12px;">
         <button id="btnFit" style="flex:1; justify-content:center;">В кадр</button>
         <button id="btnReset" style="flex:1; justify-content:center;">Сброс вида</button>
@@ -382,6 +387,9 @@
     </button>
     <button type="button" class="tool-btn" id="toolFocus" title="Фокус на точке">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg>
+    </button>
+    <button type="button" class="tool-btn" id="toolShot" title="Сохранить снимок вида">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8a2 2 0 0 1 2-2h1.5l1-1.5h7l1 1.5H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z"/><circle cx="12" cy="13" r="3.4"/></svg>
     </button>
   </div>
   <div id="measureLabel"></div>
@@ -416,7 +424,7 @@
   const isLowMemory = navigator.deviceMemory && navigator.deviceMemory <= 4;
   const isWeakDevice = isCoarsePointer || isLowMemory;
 
-  const renderer = new THREE.WebGLRenderer({ antialias: !isWeakDevice, alpha:true, powerPreference:'high-performance' });
+  const renderer = new THREE.WebGLRenderer({ antialias: !isWeakDevice, alpha:true, powerPreference:'high-performance', preserveDrawingBuffer:true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, isWeakDevice ? 1.5 : 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   viewportEl.appendChild(renderer.domElement);
@@ -428,12 +436,14 @@
   const POINTS_VERT = `
     attribute vec3 color;
     varying vec3 vColor;
+    varying float vClipY;
     uniform float size;
     uniform float uScale;
     uniform float minSize;
     uniform float maxSize;
     void main(){
       vColor = color;
+      vClipY = position.y;
       vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
       float computed = size * (uScale / -mvPosition.z);
       gl_PointSize = clamp(computed, minSize, maxSize);
@@ -442,7 +452,11 @@
   `;
   const POINTS_FRAG = `
     varying vec3 vColor;
+    varying float vClipY;
+    uniform float clipEnabled;
+    uniform float clipY;
     void main(){
+      if(clipEnabled > 0.5 && vClipY > clipY) discard;
       vec2 c = gl_PointCoord - vec2(0.5);
       if(dot(c,c) > 0.25) discard;
       gl_FragColor = vec4(vColor, 1.0);
@@ -460,10 +474,12 @@
     const pr = Math.min(renderer.getPixelRatio(), 2);
     return new THREE.ShaderMaterial({
       uniforms: {
-        size:    { value: Math.max(spacing*0.9*slider, 1e-6) },
+        size:    { value: Math.max(spacing*0.55*slider, 1e-6) },
         uScale:  { value: pointsScaleUniform() },
-        minSize: { value: (isWeakDevice?1.1:1.3)*pr },
-        maxSize: { value: (isWeakDevice?10:16)*pr },
+        minSize: { value: (isWeakDevice?0.9:1.0)*pr },
+        maxSize: { value: (isWeakDevice?7:11)*pr },
+        clipEnabled: { value: 0 },
+        clipY: { value: 1e9 },
       },
       vertexShader: POINTS_VERT,
       fragmentShader: POINTS_FRAG,
@@ -554,7 +570,7 @@
   const clock = new THREE.Clock();
   const fly = { pos:new THREE.Vector3(), yaw:0, pitch:0, speed:1 };
   const keys = {};
-  const FLY_KEYS = ['KeyW','KeyA','KeyS','KeyD','Space','ShiftLeft','ShiftRight','ControlLeft','KeyQ','KeyE'];
+  const FLY_KEYS = ['KeyW','KeyA','KeyS','KeyD','Space','ShiftLeft','ShiftRight','ControlLeft','ControlRight','KeyQ','KeyE','KeyC'];
   window.addEventListener('keydown', e=>{
     keys[e.code] = true;
     if(cameraMode==='fly' && FLY_KEYS.includes(e.code)) e.preventDefault();
@@ -613,12 +629,12 @@
     if(keys['KeyD']) mx+=1;
     if(keys['KeyA']) mx-=1;
     if(keys['Space']||keys['KeyE']) my+=1;
-    if(keys['ShiftLeft']||keys['ControlLeft']||keys['KeyQ']) my-=1;
+    if(keys['ControlLeft']||keys['ControlRight']||keys['KeyQ']||keys['KeyC']) my-=1;
     mx += joystickVec.x; mz += -joystickVec.y;
     if(flyUpHeld) my+=1;
     if(flyDownHeld) my-=1;
 
-    const sprint = keys['ShiftRight'] ? 2.4 : 1;
+    const sprint = (keys['ShiftLeft']||keys['ShiftRight']) ? 2.4 : 1;
     const base = Math.max(diag*0.22, 0.08) * fly.speed;
     const speed = base*sprint;
     fly.pos.addScaledVector(forward, mz*speed*dt);
@@ -967,6 +983,18 @@
   document.getElementById('toolFocus').addEventListener('click', ()=> setActiveTool('focus'));
   document.getElementById('toolFly').addEventListener('click', ()=>{
     if(cameraMode==='fly') exitFlyMode(); else enterFlyMode();
+  });
+  document.getElementById('toolShot').addEventListener('click', (e)=>{
+    if(!currentData) return;
+    renderer.render(scene, camera); // гарантируем, что в буфере — свежий кадр
+    const link = document.createElement('a');
+    const baseName = (lastFileInfo && lastFileInfo.name ? lastFileInfo.name.replace(/\.[^.]+$/,'') : 'point-cloud');
+    link.download = baseName + '.png';
+    link.href = renderer.domElement.toDataURL('image/png');
+    link.click();
+    const btn = e.currentTarget;
+    btn.classList.add('active');
+    setTimeout(()=> btn.classList.remove('active'), 250);
   });
   window.addEventListener('keydown', e=>{
     if(e.code==='Escape' && activeTool) setActiveTool(activeTool);
@@ -1365,6 +1393,17 @@
     currentData.heightRange = [hMin, hMax];
     currentData.posF32 = posF32;
 
+    // разрез по высоте: если уже был включён — пересчитываем уровень под новые данные,
+    // если нет — просто готовим ползунок под диапазон высот этого облака
+    const clipToggleEl = document.getElementById('clipToggle');
+    const clipSliderEl = document.getElementById('clipSlider');
+    if(!opts.keepClip){ clipToggleEl.checked = false; document.getElementById('clipRow').style.display='none'; clipSliderEl.value = 100; }
+    if(clipToggleEl.checked){
+      const pct = parseFloat(clipSliderEl.value);
+      material.uniforms.clipEnabled.value = 1;
+      material.uniforms.clipY.value = hMin + (pct/100)*(hMax-hMin);
+    }
+
     const wantedMode = opts.preserveColorMode;
     const modeAvailable = wantedMode==='rgb' ? !!parsed.colors : wantedMode==='intensity' ? !!parsed.intensity : true;
     colorMode = (wantedMode && modeAvailable) ? wantedMode : (parsed.colors ? 'rgb' : 'height');
@@ -1526,7 +1565,7 @@
         loadingText.textContent = `РАЗБОР ТОЧЕК… ${Math.round(frac*100)}%`;
       }, currentCap);
       lastParsed = parsed;
-      buildFromParsed(parsed, lastFileInfo, { keepCamera:true, preserveColorMode: savedColorMode });
+      buildFromParsed(parsed, lastFileInfo, { keepCamera:true, preserveColorMode: savedColorMode, keepClip:true });
     }catch(err){
       console.error(err);
       showError(err.message || 'Не удалось пересчитать облако точек.');
@@ -1820,16 +1859,30 @@
     if(pointsObject && pointsObject.material.uniforms && currentData){
       const slider = parseFloat(document.getElementById('pointSize').value);
       const spacing = diag/Math.cbrt(Math.max(currentData.n,8));
-      pointsObject.material.uniforms.size.value = Math.max(spacing*0.9*slider, 1e-6);
+      pointsObject.material.uniforms.size.value = Math.max(spacing*0.55*slider, 1e-6);
     }
   });
   document.getElementById('swapAxes').addEventListener('change', ()=>{
     // полный пересчёт геометрии с новой ориентацией осей (не просто визуальный поворот)
-    if(lastParsed) buildFromParsed(lastParsed, lastFileInfo, { preserveColorMode: colorMode });
+    if(lastParsed) buildFromParsed(lastParsed, lastFileInfo, { preserveColorMode: colorMode, keepClip:true });
   });
   document.getElementById('showGrid').addEventListener('change', e=>{
     if(gridHelper) gridHelper.visible = e.target.checked;
   });
+  document.getElementById('clipToggle').addEventListener('change', e=>{
+    document.getElementById('clipRow').style.display = e.target.checked ? 'flex' : 'none';
+    if(pointsObject && pointsObject.material.uniforms){
+      pointsObject.material.uniforms.clipEnabled.value = e.target.checked ? 1 : 0;
+      if(e.target.checked) updateClipLevel();
+    }
+  });
+  function updateClipLevel(){
+    if(!pointsObject || !pointsObject.material.uniforms || !currentData) return;
+    const [hMin,hMax] = currentData.heightRange;
+    const pct = parseFloat(document.getElementById('clipSlider').value);
+    pointsObject.material.uniforms.clipY.value = hMin + (pct/100)*(hMax-hMin);
+  }
+  document.getElementById('clipSlider').addEventListener('input', updateClipLevel);
   document.getElementById('hudToggle').addEventListener('click', ()=>{
     document.getElementById('hud').classList.toggle('expanded');
   });
