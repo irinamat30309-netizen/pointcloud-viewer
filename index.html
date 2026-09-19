@@ -147,7 +147,7 @@
   #hint b{ color:var(--text); font-weight:500; }
 
   /* ---------- toolbar: полёт / измерение / фокус ---------- */
-  #toolbar{ position:absolute; top:64px; left:16px; z-index:22; display:none; gap:8px; }
+  #toolbar{ position:absolute; top:64px; left:16px; z-index:22; display:none; flex-direction:column; gap:8px; }
   #toolbar.visible{ display:flex; }
   .tool-btn{
     width:40px; height:40px; padding:0; justify-content:center;
@@ -366,12 +366,18 @@
     <button type="button" class="tool-btn" id="toolFly" title="Режим полёта">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 21 3l-8 18-2.2-7.3L3 11.5z"/></svg>
     </button>
-    <button type="button" class="tool-btn" id="toolMeasure" title="Измерить расстояние">
+    <button type="button" class="tool-btn" id="toolDistance" title="Измерить расстояние">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
         <rect x="3" y="9.5" width="18" height="5" rx="1" transform="rotate(-35 12 12)"/>
         <line x1="8" y1="9.5" x2="8" y2="12.2" transform="rotate(-35 12 12)"/>
         <line x1="12" y1="9.5" x2="12" y2="13" transform="rotate(-35 12 12)"/>
         <line x1="16" y1="9.5" x2="16" y2="12.2" transform="rotate(-35 12 12)"/>
+      </svg>
+    </button>
+    <button type="button" class="tool-btn" id="toolAngle" title="Измерить угол">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5 5v14h14"/>
+        <path d="M5 13a8 8 0 0 1 6 6"/>
       </svg>
     </button>
     <button type="button" class="tool-btn" id="toolFocus" title="Фокус на точке">
@@ -414,6 +420,55 @@
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, isWeakDevice ? 1.5 : 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   viewportEl.appendChild(renderer.domElement);
+
+  // Свой шейдер точек вместо THREE.PointsMaterial: размер точки растёт при
+  // приближении камеры (как обычное затухание по расстоянию — облако остаётся
+  // плотным вплотную), но зажат сверху потолком в пикселях — поэтому не раздувается
+  // и не тормозит видеокарту на экстремальном зуме или в режиме полёта.
+  const POINTS_VERT = `
+    attribute vec3 color;
+    varying vec3 vColor;
+    uniform float size;
+    uniform float uScale;
+    uniform float minSize;
+    uniform float maxSize;
+    void main(){
+      vColor = color;
+      vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+      float computed = size * (uScale / -mvPosition.z);
+      gl_PointSize = clamp(computed, minSize, maxSize);
+      gl_Position = projectionMatrix * mvPosition;
+    }
+  `;
+  const POINTS_FRAG = `
+    varying vec3 vColor;
+    void main(){
+      vec2 c = gl_PointCoord - vec2(0.5);
+      if(dot(c,c) > 0.25) discard;
+      gl_FragColor = vec4(vColor, 1.0);
+    }
+  `;
+  function pointsScaleUniform(){
+    const ds = new THREE.Vector2();
+    renderer.getDrawingBufferSize(ds);
+    return ds.y*0.5;
+  }
+  function makePointsMaterial(nPoints){
+    const slider = parseFloat(document.getElementById('pointSize').value);
+    const n = nPoints || (currentData ? currentData.n : 500000);
+    const spacing = diag/Math.cbrt(Math.max(n,8));
+    const pr = Math.min(renderer.getPixelRatio(), 2);
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        size:    { value: Math.max(spacing*0.9*slider, 1e-6) },
+        uScale:  { value: pointsScaleUniform() },
+        minSize: { value: (isWeakDevice?1.1:1.3)*pr },
+        maxSize: { value: (isWeakDevice?10:16)*pr },
+      },
+      vertexShader: POINTS_VERT,
+      fragmentShader: POINTS_FRAG,
+    });
+  }
 
   let pointsObject = null;
   let gridHelper = null;
@@ -762,14 +817,14 @@
   bindHold(document.getElementById('flyUp'),   ()=>flyUpHeld=true,   ()=>flyUpHeld=false);
   bindHold(document.getElementById('flyDown'), ()=>flyDownHeld=true, ()=>flyDownHeld=false);
 
-  /* ===================== ИНСТРУМЕНТЫ: ФОКУС / ИЗМЕРЕНИЕ (клик по точке) ===================== */
-  let activeTool = null; // null | 'measure' | 'focus'
+  /* ===================== ИНСТРУМЕНТЫ: РАССТОЯНИЕ / УГОЛ / ФОКУС (клик по точке) ===================== */
+  let activeTool = null; // null | 'distance' | 'angle' | 'focus'
   const raycaster = new THREE.Raycaster();
   raycaster.params.Points = { threshold: 1 };
-  let measurePoints = [];   // подтверждённые клики (0-2)
-  let measureLive = null;   // живая точка под курсором, пока подтверждена только одна
+  let measurePoints = [];   // подтверждённые клики
+  let measureLive = null;   // живая точка под курсором, пока не хватает точек
   let measureMarkers = [];
-  let measureLine = null;
+  let measureLines = [];    // до 2 линий (для угла — два луча из вершины)
   let hoverX=0, hoverY=0, hasHover=false;
 
   function pickPoint(clientX, clientY){
@@ -779,8 +834,10 @@
       ((clientX-rect.left)/rect.width)*2-1,
       -((clientY-rect.top)/rect.height)*2+1
     );
+    // точный подбор: порог чуть больше среднего расстояния между точками —
+    // достаточно, чтобы не промахиваться мимо облака, но не хватать соседние поверхности
     const spacing = diag/Math.cbrt(Math.max(currentData.n,8));
-    raycaster.params.Points.threshold = Math.max(spacing*1.5, diag*0.0015);
+    raycaster.params.Points.threshold = Math.max(spacing*1.1, diag*0.0009);
     raycaster.setFromCamera(ndc, camera);
     const hits = raycaster.intersectObject(pointsObject, false);
     return hits.length ? hits[0].point.clone() : null;
@@ -791,13 +848,21 @@
     const rect = dom.getBoundingClientRect();
     return { x: rect.left + (v.x*0.5+0.5)*rect.width, y: rect.top + (-v.y*0.5+0.5)*rect.height, inFront: v.z<1 };
   }
+  function computeAngleDeg(vertex, p1, p2){
+    const v1 = p1.clone().sub(vertex).normalize();
+    const v2 = p2.clone().sub(vertex).normalize();
+    const cos = Math.max(-1, Math.min(1, v1.dot(v2)));
+    return THREE.MathUtils.radToDeg(Math.acos(cos));
+  }
+  function requiredPoints(){ return activeTool==='angle' ? 3 : activeTool==='distance' ? 2 : 0; }
 
   function clearMeasure(){
     measurePoints = [];
     measureLive = null;
     measureMarkers.forEach(m=>{ scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
     measureMarkers = [];
-    if(measureLine){ scene.remove(measureLine); measureLine.geometry.dispose(); measureLine.material.dispose(); measureLine=null; }
+    measureLines.forEach(l=>{ if(l){ scene.remove(l); l.geometry.dispose(); l.material.dispose(); } });
+    measureLines = [];
     document.getElementById('measureLabel').classList.remove('visible');
   }
   function addMeasureMarker(pt){
@@ -808,94 +873,119 @@
     scene.add(mesh);
     measureMarkers.push(mesh);
   }
+  function ensureLine(i, a, b){
+    if(!measureLines[i]){
+      const geo = new THREE.BufferGeometry().setFromPoints([a,b]);
+      measureLines[i] = new THREE.Line(geo, new THREE.LineBasicMaterial({ color:0xe8823a, transparent:true }));
+      scene.add(measureLines[i]);
+    } else {
+      measureLines[i].visible = true;
+      const pos = measureLines[i].geometry.getAttribute('position');
+      pos.setXYZ(0, a.x,a.y,a.z); pos.setXYZ(1, b.x,b.y,b.z); pos.needsUpdate = true;
+      measureLines[i].geometry.computeBoundingSphere();
+    }
+  }
+  function hideLinesFrom(i){
+    for(let k=i;k<measureLines.length;k++){ if(measureLines[k]) measureLines[k].visible=false; }
+  }
+  function showLabel(pos, text, final){
+    const label = document.getElementById('measureLabel');
+    const scr = worldToScreen(pos);
+    label.style.left = scr.x+'px'; label.style.top = scr.y+'px';
+    label.classList.toggle('pending', !final);
+    label.innerHTML = final ? `${text} <button type="button" id="measureClearBtn">✕</button>` : text;
+    label.classList.toggle('visible', scr.inFront);
+    if(final){ const btn=document.getElementById('measureClearBtn'); if(btn) btn.onclick = clearMeasure; }
+  }
+
   function handleToolClick(clientX, clientY){
     const pt = pickPoint(clientX, clientY);
     if(!pt) return;
-    if(activeTool==='focus'){
-      desired.target.copy(pt);
-      return;
-    }
-    if(activeTool==='measure'){
-      if(measurePoints.length>=2) clearMeasure();
+    if(activeTool==='focus'){ desired.target.copy(pt); return; }
+    if(activeTool==='distance' || activeTool==='angle'){
+      if(measurePoints.length>=requiredPoints()) clearMeasure();
       measurePoints.push(pt);
       addMeasureMarker(pt);
     }
   }
 
-  // покадрово: пока выбрана ровно одна точка — тянем "живую" вторую точку за курсором
-  // (только для мыши; на тач-устройствах предпросмотра нет — два тапа и готово)
+  // покадрово: пока не хватает точек — тянем "живую" следующую точку за курсором
+  // (только для мыши; на тач-устройствах предпросмотра нет — просто тапы по очереди)
   function updateMeasureLive(){
-    if(activeTool!=='measure' || measurePoints.length!==1 || cameraMode!=='orbit' || dragging || panning || !hasHover){
+    const need = requiredPoints();
+    if(!need || measurePoints.length===0 || measurePoints.length>=need || cameraMode!=='orbit' || dragging || panning || !hasHover){
       measureLive = null;
       return;
     }
     measureLive = pickPoint(hoverX, hoverY);
   }
 
-  // покадрово: рисуем/обновляем линию и подпись-расстояние прямо на ней
+  // покадрово: рисуем/обновляем линию(и) и подпись прямо в сцене
   function refreshMeasureVisual(){
-    const label = document.getElementById('measureLabel');
-    let a=null, b=null, final=false;
-    if(measurePoints.length===2){ a=measurePoints[0]; b=measurePoints[1]; final=true; }
-    else if(measurePoints.length===1 && measureLive){ a=measurePoints[0]; b=measureLive; final=false; }
-
-    if(!a || !b){
-      if(measureLine) measureLine.visible=false;
-      label.classList.remove('visible');
-      return;
-    }
-    if(!measureLine){
-      const geo = new THREE.BufferGeometry().setFromPoints([a,b]);
-      measureLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ color:0xe8823a, transparent:true }));
-      scene.add(measureLine);
+    if(activeTool==='distance'){
+      let a=null,b=null,final=false;
+      if(measurePoints.length===2){ a=measurePoints[0]; b=measurePoints[1]; final=true; }
+      else if(measurePoints.length===1 && measureLive){ a=measurePoints[0]; b=measureLive; }
+      if(!a||!b){ hideLinesFrom(0); document.getElementById('measureLabel').classList.remove('visible'); return; }
+      ensureLine(0,a,b); hideLinesFrom(1);
+      measureLines[0].material.opacity = final?1:0.55;
+      showLabel(a.clone().add(b).multiplyScalar(0.5), fmtMeters(a.distanceTo(b)), final);
+    } else if(activeTool==='angle'){
+      if(measurePoints.length===0){ hideLinesFrom(0); document.getElementById('measureLabel').classList.remove('visible'); return; }
+      const vertex = measurePoints[0];
+      const p1 = measurePoints[1] || measureLive;
+      if(!p1){ hideLinesFrom(0); document.getElementById('measureLabel').classList.remove('visible'); return; }
+      ensureLine(0, vertex, p1);
+      const p2 = measurePoints[2] || (measurePoints.length===2 ? measureLive : null);
+      if(!p2){
+        hideLinesFrom(1);
+        measureLines[0].material.opacity = 0.55;
+        document.getElementById('measureLabel').classList.remove('visible');
+        return;
+      }
+      ensureLine(1, vertex, p2);
+      const final = measurePoints.length===3;
+      measureLines[0].material.opacity = final?1:0.55;
+      measureLines[1].material.opacity = final?1:0.55;
+      showLabel(vertex, computeAngleDeg(vertex,p1,p2).toFixed(1)+'°', final);
     } else {
-      measureLine.visible = true;
-      const pos = measureLine.geometry.getAttribute('position');
-      pos.setXYZ(0, a.x,a.y,a.z); pos.setXYZ(1, b.x,b.y,b.z); pos.needsUpdate = true;
-      measureLine.geometry.computeBoundingSphere();
-    }
-    measureLine.material.opacity = final ? 1 : 0.55;
-
-    const mid = a.clone().add(b).multiplyScalar(0.5);
-    const scr = worldToScreen(mid);
-    const dist = a.distanceTo(b);
-    label.style.left = scr.x+'px';
-    label.style.top = scr.y+'px';
-    label.classList.toggle('pending', !final);
-    label.innerHTML = final
-      ? `${fmtMeters(dist)} <button type="button" id="measureClearBtn">✕</button>`
-      : fmtMeters(dist);
-    label.classList.toggle('visible', scr.inFront);
-    if(final){
-      const btn = document.getElementById('measureClearBtn');
-      if(btn) btn.onclick = clearMeasure;
+      hideLinesFrom(0);
+      document.getElementById('measureLabel').classList.remove('visible');
     }
   }
 
   function setActiveTool(tool){
     activeTool = (activeTool===tool) ? null : tool;
-    document.getElementById('toolMeasure').classList.toggle('active', activeTool==='measure');
+    document.getElementById('toolDistance').classList.toggle('active', activeTool==='distance');
+    document.getElementById('toolAngle').classList.toggle('active', activeTool==='angle');
     document.getElementById('toolFocus').classList.toggle('active', activeTool==='focus');
     viewportEl.classList.toggle('tool-active', !!activeTool);
-    if(activeTool!=='measure') clearMeasure();
+    if(activeTool!=='distance' && activeTool!=='angle') clearMeasure();
   }
-  document.getElementById('toolMeasure').addEventListener('click', ()=> setActiveTool('measure'));
+  document.getElementById('toolDistance').addEventListener('click', ()=> setActiveTool('distance'));
+  document.getElementById('toolAngle').addEventListener('click', ()=> setActiveTool('angle'));
   document.getElementById('toolFocus').addEventListener('click', ()=> setActiveTool('focus'));
   document.getElementById('toolFly').addEventListener('click', ()=>{
     if(cameraMode==='fly') exitFlyMode(); else enterFlyMode();
+  });
+  window.addEventListener('keydown', e=>{
+    if(e.code==='Escape' && activeTool) setActiveTool(activeTool);
   });
 
   window.addEventListener('resize', ()=>{
     camera.aspect = window.innerWidth/window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+    if(pointsObject && pointsObject.material.uniforms){
+      pointsObject.material.uniforms.uScale.value = pointsScaleUniform();
+    }
   });
 
   (function animate(){
     requestAnimationFrame(animate);
     const dt = Math.min(clock.getDelta(), 0.05);
     if(cameraMode==='fly') tickFly(dt); else tickControls();
-    if(activeTool==='measure'){ updateMeasureLive(); refreshMeasureVisual(); }
+    if(activeTool==='distance' || activeTool==='angle'){ updateMeasureLive(); refreshMeasureVisual(); }
     renderer.render(scene, camera);
   })();
 
@@ -1257,7 +1347,7 @@
 
     // фиксированный размер в пикселях экрана (без "затухания по расстоянию") —
     // при приближении камеры точки больше не раздуваются и не забивают видеокарту
-    const material = new THREE.PointsMaterial({ size: computePointSize(), vertexColors:true, sizeAttenuation:false });
+    const material = makePointsMaterial(n);
     pointsObject = new THREE.Points(geometry, material);
     drawCount = n;
     geometry.setDrawRange(0, drawCount);
@@ -1313,13 +1403,15 @@
     document.getElementById('toolbar').classList.add('visible');
     if(cameraMode==='fly') exitFlyMode();
     clearMeasure();
-    if(activeTool){ activeTool=null; document.getElementById('toolMeasure').classList.remove('active'); document.getElementById('toolFocus').classList.remove('active'); viewportEl.classList.remove('tool-active'); }
+    if(activeTool){
+      activeTool=null;
+      document.getElementById('toolDistance').classList.remove('active');
+      document.getElementById('toolAngle').classList.remove('active');
+      document.getElementById('toolFocus').classList.remove('active');
+      viewportEl.classList.remove('tool-active');
+    }
   }
 
-  function computePointSize(){
-    const slider = parseFloat(document.getElementById('pointSize').value);
-    return slider * Math.min(renderer.getPixelRatio(), 2);
-  }
 
   function applyColorMode(mode){
     if(!pointsObject) return;
@@ -1725,7 +1817,11 @@
   }
 
   document.getElementById('pointSize').addEventListener('input', ()=>{
-    if(pointsObject) pointsObject.material.size = computePointSize();
+    if(pointsObject && pointsObject.material.uniforms && currentData){
+      const slider = parseFloat(document.getElementById('pointSize').value);
+      const spacing = diag/Math.cbrt(Math.max(currentData.n,8));
+      pointsObject.material.uniforms.size.value = Math.max(spacing*0.9*slider, 1e-6);
+    }
   });
   document.getElementById('swapAxes').addEventListener('change', ()=>{
     // полный пересчёт геометрии с новой ориентацией осей (не просто визуальный поворот)
