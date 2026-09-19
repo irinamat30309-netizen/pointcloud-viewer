@@ -146,6 +146,53 @@
   #hint.visible{ display:block; }
   #hint b{ color:var(--text); font-weight:500; }
 
+  /* ---------- toolbar: полёт / измерение / фокус ---------- */
+  #toolbar{ position:absolute; top:64px; left:16px; z-index:22; display:none; gap:8px; }
+  #toolbar.visible{ display:flex; }
+  .tool-btn{
+    width:40px; height:40px; padding:0; justify-content:center;
+    background:var(--panel); border:1px solid var(--border); border-radius:8px;
+    font-size:17px; line-height:1; backdrop-filter:blur(10px);
+  }
+  .tool-btn.active{ border-color:var(--accent); background:rgba(232,130,58,0.18); }
+
+  .measure-chip{
+    position:absolute; top:64px; left:132px; z-index:22;
+    background:var(--panel); border:1px solid var(--border); border-radius:8px;
+    padding:9px 12px; font-family:var(--mono); font-size:12.5px;
+    display:none; align-items:center; gap:9px; backdrop-filter:blur(10px);
+  }
+  .measure-chip.visible{ display:flex; }
+  .measure-chip button{ padding:2px 7px; font-size:11px; border-radius:5px; }
+
+  #viewport.tool-active canvas{ cursor:crosshair; }
+
+  /* ---------- виртуальный джойстик (режим полёта, тач) ---------- */
+  #joystick{
+    position:absolute; left:22px; bottom:22px; z-index:22;
+    width:116px; height:116px; display:none;
+  }
+  #joystick.visible{ display:block; }
+  #joystick .joy-base{
+    width:100%; height:100%; border-radius:50%;
+    background:var(--panel); border:1px solid var(--border); backdrop-filter:blur(10px);
+    display:flex; align-items:center; justify-content:center;
+  }
+  #joystick .joy-knob{
+    width:48px; height:48px; border-radius:50%;
+    background:var(--panel-solid); border:1px solid var(--accent-dim);
+    transition:transform .05s linear;
+  }
+  #flyVertControls{
+    position:absolute; right:22px; bottom:22px; z-index:22;
+    display:none; flex-direction:column; gap:8px;
+  }
+  #flyVertControls.visible{ display:flex; }
+  .fly-vbtn{
+    width:46px; height:46px; padding:0; justify-content:center; font-size:16px;
+    background:var(--panel); border:1px solid var(--border); border-radius:10px; backdrop-filter:blur(10px);
+  }
+
   /* ---------- loading ---------- */
   #loading{
     position:absolute; inset:0; z-index:30; display:none;
@@ -211,6 +258,13 @@
     .hud-toggle .htg-label{ font-size:12.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .hud-toggle svg{ flex:none; width:16px; height:16px; color:var(--muted); transition:transform .2s ease; }
     #hud.expanded .hud-toggle svg{ transform:rotate(180deg); }
+
+    #toolbar{ top:96px; left:12px; gap:6px; }
+    .tool-btn{ width:42px; height:42px; font-size:18px; }
+    .measure-chip{ top:96px; left:12px; }
+    #joystick{ left:16px; bottom:74px; width:104px; height:104px; }
+    #joystick .joy-knob{ width:44px; height:44px; }
+    #flyVertControls{ right:16px; bottom:74px; }
   }
 </style>
 </head>
@@ -290,11 +344,10 @@
     <div class="hud-section">
       <div class="slider-row">
         <label>Размер точек</label>
-        <input type="range" id="pointSize" min="0.2" max="4" step="0.1" value="1">
+        <input type="range" id="pointSize" min="1" max="6" step="0.5" value="1">
       </div>
       <label class="checkbox-row"><input type="checkbox" id="swapAxes"><span>Поменять оси Y ↔ Z (если модель лежит на боку)</span></label>
       <label class="checkbox-row"><input type="checkbox" id="showGrid" checked><span>Показать сетку</span></label>
-      <label class="checkbox-row"><input type="checkbox" id="lowQuality"><span>Упрощённый режим (для слабых устройств)</span></label>
       <div style="display:flex; gap:8px; margin-top:12px;">
         <button id="btnFit" style="flex:1; justify-content:center;">В кадр</button>
         <button id="btnReset" style="flex:1; justify-content:center;">Сброс вида</button>
@@ -304,6 +357,21 @@
         Скопировать ссылку
       </button>
     </div>
+  </div>
+
+  <div id="toolbar">
+    <button type="button" class="tool-btn" id="toolFly" title="Режим полёта">✈️</button>
+    <button type="button" class="tool-btn" id="toolMeasure" title="Измерить расстояние">📏</button>
+    <button type="button" class="tool-btn" id="toolFocus" title="Фокус на точке">🎯</button>
+  </div>
+  <div id="measureResult" class="measure-chip"></div>
+
+  <div id="joystick">
+    <div class="joy-base"><div class="joy-knob" id="joyKnob"></div></div>
+  </div>
+  <div id="flyVertControls">
+    <button type="button" class="fly-vbtn" id="flyUp">▲</button>
+    <button type="button" class="fly-vbtn" id="flyDown">▼</button>
   </div>
 
   <div id="hint"><b>ЛКМ</b> — вращение &nbsp;·&nbsp; <b>ПКМ</b> — панорама &nbsp;·&nbsp; <b>колесо</b> — масштаб</div>
@@ -334,20 +402,30 @@
   viewportEl.appendChild(renderer.domElement);
 
   let pointsObject = null;
-  let lodObject = null; // облегчённая версия для плавного вращения/зума
   let gridHelper = null;
   let currentData = null; // {positions(centered Float32), rgb, intensity, count, bboxSizeOriginal, minZorig,maxZorig}
   let diag = 10;
-  const LOD_TARGET = isWeakDevice ? 60000 : 150000;
-  let forceLowQuality = isWeakDevice; // на слабых/тач-устройствах включаем упрощённый режим сразу
-  let interacting = false;
+  const LOD_TARGET = isWeakDevice ? 45000 : 90000; // сколько точек рисуем во время движения камеры
   let wheelIdleTimer = null;
-  function setInteracting(active){
-    if(!lodObject) return; // облако и так маленькое — LOD не нужен
-    if(active===interacting) return;
-    interacting = active;
-    pointsObject.visible = !active;
-    lodObject.visible = active;
+  let drawCount = 0; // сколько точек из геометрии реально рисуется прямо сейчас
+
+  // плавно подгоняем реально отрисовываемое число точек к нужному —
+  // вниз (в LOD) мгновенно, вверх (обратно к полной детализации) за несколько
+  // кадров маленькими порциями, чтобы не было ни лагов, ни рывка/скачка на экране
+  function tickDrawRange(wantLow){
+    if(!pointsObject || !currentData) return;
+    const n = currentData.n;
+    const lowCount = Math.min(currentData.previewCount, n);
+    const target = wantLow ? lowCount : n;
+    if(target === drawCount) return;
+    if(target < drawCount){
+      drawCount = target;
+    } else {
+      const remaining = target - drawCount;
+      const minStep = Math.max(1, Math.ceil((n-lowCount)/9));
+      drawCount = Math.min(target, drawCount + Math.max(minStep, Math.ceil(remaining*0.4)));
+    }
+    pointsObject.geometry.setDrawRange(0, drawCount);
   }
 
   /* ---- simple orbit controls with damping (no external dependency) ---- */
@@ -388,7 +466,7 @@
     controls.target.lerp(desired.target, DAMPING);
     updateCamera();
 
-    // LOD включаем, пока идёт активный ввод ИЛИ пока камера ещё "доезжает" по инерции —
+    // упрощаем отрисовку, пока идёт активный ввод ИЛИ пока камера ещё "доезжает" по инерции —
     // иначе после отпускания мыши доводка рендерится полным облаком и подвисает
     const radiusEps = Math.max(diag*0.0006, 0.0002);
     const targetEps = Math.max(diag*0.0006, 0.0002);
@@ -397,27 +475,125 @@
       Math.abs(desired.phi   - controls.phi)   > 0.0006 ||
       Math.abs(desired.radius- controls.radius)> radiusEps ||
       controls.target.distanceTo(desired.target) > targetEps;
-    setInteracting(forceLowQuality || inputActive || stillSettling);
+    tickDrawRange(inputActive || stillSettling);
   }
   let inputActive = false;
   updateCamera();
 
+  /* ===================== РЕЖИМ ПОЛЁТА (для помещений/интерьеров) ===================== */
+  let cameraMode = 'orbit'; // 'orbit' | 'fly'
+  const clock = new THREE.Clock();
+  const fly = { pos:new THREE.Vector3(), yaw:0, pitch:0, speed:1 };
+  const keys = {};
+  const FLY_KEYS = ['KeyW','KeyA','KeyS','KeyD','Space','ShiftLeft','ShiftRight','ControlLeft','KeyQ','KeyE'];
+  window.addEventListener('keydown', e=>{
+    keys[e.code] = true;
+    if(cameraMode==='fly' && FLY_KEYS.includes(e.code)) e.preventDefault();
+    if(e.code==='Escape' && cameraMode==='fly') exitFlyMode();
+  });
+  window.addEventListener('keyup', e=>{ keys[e.code] = false; });
+
+  function flyDirVectors(){
+    const cosP = Math.cos(fly.pitch), sinP = Math.sin(fly.pitch);
+    const cosY = Math.cos(fly.yaw), sinY = Math.sin(fly.yaw);
+    const forward = new THREE.Vector3(sinY*cosP, sinP, cosY*cosP).normalize();
+    const right = new THREE.Vector3(cosY, 0, -sinY).normalize();
+    return { forward, right };
+  }
+
+  function enterFlyMode(){
+    if(!currentData || cameraMode==='fly') return;
+    cameraMode = 'fly';
+    fly.pos.copy(camera.position);
+    const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+    fly.pitch = Math.asin(Math.max(-1, Math.min(1, dir.y)));
+    fly.yaw = Math.atan2(dir.x, dir.z);
+    document.getElementById('toolFly').classList.add('active');
+    document.getElementById('joystick').classList.toggle('visible', isCoarsePointer);
+    document.getElementById('flyVertControls').classList.toggle('visible', isCoarsePointer);
+    document.getElementById('hint').innerHTML = isCoarsePointer
+      ? '<b>Джойстик слева</b> — движение &nbsp;·&nbsp; <b>палец по экрану</b> — осмотр &nbsp;·&nbsp; ▲▼ справа — высота'
+      : '<b>WASD</b> — движение &nbsp;·&nbsp; <b>ЛКМ + мышь</b> — осмотр &nbsp;·&nbsp; <b>Shift</b> — ускорение &nbsp;·&nbsp; <b>Esc</b> — выход';
+  }
+  function exitFlyMode(){
+    if(cameraMode!=='fly') return;
+    cameraMode = 'orbit';
+    const { forward } = flyDirVectors();
+    const dist = Math.max(diag*0.3, 1);
+    desired.target.copy(fly.pos).addScaledVector(forward, dist);
+    desired.radius = dist;
+    controls.target.copy(desired.target);
+    controls.radius = desired.radius;
+    const toCam = camera.position.clone().sub(desired.target);
+    const r = toCam.length() || 1;
+    controls.phi = Math.acos(Math.max(-1, Math.min(1, toCam.y/r)));
+    controls.theta = Math.atan2(toCam.x, toCam.z);
+    desired.theta = controls.theta; desired.phi = controls.phi;
+    joyReset(); flyUpHeld=false; flyDownHeld=false;
+    document.getElementById('toolFly').classList.remove('active');
+    document.getElementById('joystick').classList.remove('visible');
+    document.getElementById('flyVertControls').classList.remove('visible');
+    document.getElementById('hint').innerHTML = '<b>ЛКМ</b> — вращение &nbsp;·&nbsp; <b>ПКМ</b> — панорама &nbsp;·&nbsp; <b>колесо</b> — масштаб';
+  }
+
+  function tickFly(dt){
+    const { forward, right } = flyDirVectors();
+    let mx=0, mz=0, my=0;
+    if(keys['KeyW']) mz+=1;
+    if(keys['KeyS']) mz-=1;
+    if(keys['KeyD']) mx+=1;
+    if(keys['KeyA']) mx-=1;
+    if(keys['Space']||keys['KeyE']) my+=1;
+    if(keys['ShiftLeft']||keys['ControlLeft']||keys['KeyQ']) my-=1;
+    mx += joystickVec.x; mz += -joystickVec.y;
+    if(flyUpHeld) my+=1;
+    if(flyDownHeld) my-=1;
+
+    const sprint = keys['ShiftRight'] ? 2.4 : 1;
+    const base = Math.max(diag*0.22, 0.08) * fly.speed;
+    const speed = base*sprint;
+    fly.pos.addScaledVector(forward, mz*speed*dt);
+    fly.pos.addScaledVector(right, mx*speed*dt);
+    fly.pos.y += my*speed*dt;
+
+    camera.position.copy(fly.pos);
+    camera.lookAt(fly.pos.clone().add(forward));
+
+    const moving = Math.abs(mx)>0.02 || Math.abs(mz)>0.02 || Math.abs(my)>0.02;
+    tickDrawRange(moving);
+  }
+
   let dragging = false, panning = false, lastX=0, lastY=0;
+  let mouseDownX=0, mouseDownY=0;
   const dom = renderer.domElement;
   dom.addEventListener('contextmenu', e=>e.preventDefault());
   dom.addEventListener('mousedown', e=>{
     if(!currentData) return;
-    if(e.button===0){ dragging=true; }
+    if(e.button===0){ dragging=true; mouseDownX=e.clientX; mouseDownY=e.clientY; }
     else if(e.button===2 || e.button===1){ panning=true; }
     lastX=e.clientX; lastY=e.clientY;
     inputActive = true;
   });
-  window.addEventListener('mouseup', ()=>{ dragging=false; panning=false; inputActive=false; });
+  window.addEventListener('mouseup', e=>{
+    if(dragging && cameraMode==='orbit' && activeTool){
+      const moved = Math.hypot(e.clientX-mouseDownX, e.clientY-mouseDownY);
+      if(moved<6) handleToolClick(e.clientX, e.clientY);
+    }
+    dragging=false; panning=false; inputActive=false;
+  });
   window.addEventListener('mouseleave', ()=>{ dragging=false; panning=false; inputActive=false; });
   window.addEventListener('mousemove', e=>{
     if(!currentData) return;
     const dx = e.clientX-lastX, dy = e.clientY-lastY;
     lastX=e.clientX; lastY=e.clientY;
+    if(cameraMode==='fly'){
+      if(dragging){
+        fly.yaw   -= dx*0.0028;
+        fly.pitch -= dy*0.0028;
+        fly.pitch = Math.max(-1.5, Math.min(1.5, fly.pitch));
+      }
+      return;
+    }
     if(dragging){
       desired.theta -= dx*0.0065;
       desired.phi -= dy*0.0065;
@@ -432,31 +608,51 @@
       desired.target.addScaledVector(up, dy*panScale);
     }
   });
+
+  // двойной клик — приближает к тому месту, куда кликнули (как в картах)
+  dom.addEventListener('dblclick', e=>{
+    if(!currentData || cameraMode!=='orbit') return;
+    const rect = dom.getBoundingClientRect();
+    const ndcX = ((e.clientX-rect.left)/rect.width)*2-1;
+    const ndcY = -((e.clientY-rect.top)/rect.height)*2+1;
+    const vec = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(camera);
+    const dir = vec.sub(camera.position).normalize();
+    desired.target.copy(camera.position).addScaledVector(dir, desired.radius);
+    desired.radius = Math.max(minZoomRadius(), desired.radius*0.42);
+  });
+
   function minZoomRadius(){
-    // не даём подлететь ближе, чем на несколько "средних расстояний между точками" —
-    // иначе точки (у полной версии с sizeAttenuation) раздуваются экраном во весь кадр
-    const n = currentData ? currentData.n : 0;
-    const spacing = n>0 ? diag/Math.cbrt(Math.max(n,8)) : 0;
-    return Math.max(diag*0.01, spacing*4, diag*0.0005);
+    // практически без ограничения снизу — точки больше не раздуваются при
+    // приближении (фиксированный экранный размер), так что зум можно делать "бесконечным"
+    return Math.max(camera.near*3, diag*0.00002);
   }
 
   dom.addEventListener('wheel', e=>{
     if(!currentData) return;
     e.preventDefault();
+    if(cameraMode==='fly'){
+      const factor = Math.exp(-e.deltaY*0.001);
+      fly.speed = Math.max(0.15, Math.min(8, fly.speed*factor));
+      return;
+    }
     const factor = Math.exp(e.deltaY*0.0011);
-    desired.radius = Math.max(minZoomRadius(), Math.min(diag*20, desired.radius*factor));
+    desired.radius = Math.max(minZoomRadius(), Math.min(diag*40, desired.radius*factor));
     inputActive = true;
     clearTimeout(wheelIdleTimer);
     wheelIdleTimer = setTimeout(()=> inputActive=false, 220);
   }, {passive:false});
 
-  // basic touch: 1 finger rotate, 2 finger pinch zoom + pan
+  // тач: 1 палец — вращение (в полёте — осмотр), 2 пальца — щипок-зум + панорама
   let touchMode=null, lastTouchDist=0, lastTouchMidX=0, lastTouchMidY=0;
+  let touchDownX=0, touchDownY=0;
   dom.addEventListener('touchstart', e=>{
     if(!currentData) return;
     e.preventDefault();
     inputActive = true;
-    if(e.touches.length===1){ touchMode='rotate'; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY; }
+    if(e.touches.length===1){
+      touchMode='rotate'; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY;
+      touchDownX=lastX; touchDownY=lastY;
+    }
     else if(e.touches.length===2){
       touchMode='pinch';
       const dx=e.touches[0].clientX-e.touches[1].clientX, dy=e.touches[0].clientY-e.touches[1].clientY;
@@ -471,13 +667,19 @@
     if(touchMode==='rotate' && e.touches.length===1){
       const dx=e.touches[0].clientX-lastX, dy=e.touches[0].clientY-lastY;
       lastX=e.touches[0].clientX; lastY=e.touches[0].clientY;
+      if(cameraMode==='fly'){
+        fly.yaw   -= dx*0.0032;
+        fly.pitch -= dy*0.0032;
+        fly.pitch = Math.max(-1.5, Math.min(1.5, fly.pitch));
+        return;
+      }
       desired.theta -= dx*0.0075; desired.phi -= dy*0.0075;
       desired.phi = Math.max(controls.minPhi, Math.min(controls.maxPhi, desired.phi));
-    } else if(touchMode==='pinch' && e.touches.length===2){
+    } else if(touchMode==='pinch' && e.touches.length===2 && cameraMode==='orbit'){
       const dx=e.touches[0].clientX-e.touches[1].clientX, dy=e.touches[0].clientY-e.touches[1].clientY;
       const dist = Math.hypot(dx,dy);
       const factor = lastTouchDist/Math.max(dist,1);
-      desired.radius = Math.max(minZoomRadius(), Math.min(diag*20, desired.radius*factor));
+      desired.radius = Math.max(minZoomRadius(), Math.min(diag*40, desired.radius*factor));
       lastTouchDist = dist;
       const midX = (e.touches[0].clientX+e.touches[1].clientX)/2;
       const midY = (e.touches[0].clientY+e.touches[1].clientY)/2;
@@ -490,7 +692,133 @@
       lastTouchMidX = midX; lastTouchMidY = midY;
     }
   }, {passive:false});
-  dom.addEventListener('touchend', ()=>{ touchMode=null; inputActive=false; });
+  dom.addEventListener('touchend', e=>{
+    if(touchMode==='rotate' && cameraMode==='orbit' && activeTool && e.changedTouches[0]){
+      const t = e.changedTouches[0];
+      const moved = Math.hypot(t.clientX-touchDownX, t.clientY-touchDownY);
+      if(moved<8) handleToolClick(t.clientX, t.clientY);
+    }
+    touchMode=null; inputActive=false;
+  });
+
+  /* ---- виртуальный джойстик (движение в режиме полёта, тач-устройства) ---- */
+  let joystickVec = {x:0, y:0};
+  let joyActive=false, joyId=null, joyStartX=0, joyStartY=0;
+  let flyUpHeld=false, flyDownHeld=false;
+  const joyKnob = document.getElementById('joyKnob');
+  function joyReset(){ joystickVec.x=0; joystickVec.y=0; if(joyKnob) joyKnob.style.transform='translate(0px,0px)'; }
+  const joystickEl = document.getElementById('joystick');
+  joystickEl.addEventListener('touchstart', e=>{
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    joyId = t.identifier;
+    const rect = joystickEl.getBoundingClientRect();
+    joyStartX = rect.left+rect.width/2; joyStartY = rect.top+rect.height/2;
+    joyActive = true;
+  }, {passive:false});
+  window.addEventListener('touchmove', e=>{
+    if(!joyActive) return;
+    for(const t of e.changedTouches){
+      if(t.identifier===joyId){
+        e.preventDefault();
+        const maxR = 40;
+        let dx=t.clientX-joyStartX, dy=t.clientY-joyStartY;
+        const d = Math.hypot(dx,dy);
+        if(d>maxR){ dx=dx/d*maxR; dy=dy/d*maxR; }
+        if(joyKnob) joyKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+        joystickVec.x = dx/maxR; joystickVec.y = dy/maxR;
+      }
+    }
+  }, {passive:false});
+  function joyEnd(e){
+    for(const t of e.changedTouches){ if(t.identifier===joyId){ joyActive=false; joyId=null; joyReset(); } }
+  }
+  window.addEventListener('touchend', joyEnd);
+  window.addEventListener('touchcancel', joyEnd);
+
+  function bindHold(el, onDown, onUp){
+    const start=e=>{ e.preventDefault(); onDown(); };
+    const end=()=> onUp();
+    el.addEventListener('touchstart', start, {passive:false});
+    el.addEventListener('touchend', end);
+    el.addEventListener('mousedown', start);
+    window.addEventListener('mouseup', end);
+  }
+  bindHold(document.getElementById('flyUp'),   ()=>flyUpHeld=true,   ()=>flyUpHeld=false);
+  bindHold(document.getElementById('flyDown'), ()=>flyDownHeld=true, ()=>flyDownHeld=false);
+
+  /* ===================== ИНСТРУМЕНТЫ: ФОКУС / ИЗМЕРЕНИЕ (клик по точке) ===================== */
+  let activeTool = null; // null | 'measure' | 'focus'
+  const raycaster = new THREE.Raycaster();
+  raycaster.params.Points = { threshold: 1 };
+  let measurePoints = [];
+  let measureMarkers = [];
+  let measureLine = null;
+
+  function pickPoint(clientX, clientY){
+    if(!pointsObject || !currentData) return null;
+    const rect = dom.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((clientX-rect.left)/rect.width)*2-1,
+      -((clientY-rect.top)/rect.height)*2+1
+    );
+    const spacing = diag/Math.cbrt(Math.max(currentData.n,8));
+    raycaster.params.Points.threshold = Math.max(spacing*1.5, diag*0.0015);
+    raycaster.setFromCamera(ndc, camera);
+    const hits = raycaster.intersectObject(pointsObject, false);
+    return hits.length ? hits[0].point.clone() : null;
+  }
+
+  function clearMeasure(){
+    measurePoints = [];
+    measureMarkers.forEach(m=>{ scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
+    measureMarkers = [];
+    if(measureLine){ scene.remove(measureLine); measureLine.geometry.dispose(); measureLine.material.dispose(); measureLine=null; }
+    document.getElementById('measureResult').classList.remove('visible');
+  }
+  function addMeasureMarker(pt){
+    const geo = new THREE.SphereGeometry(Math.max(diag*0.004, 0.01), 12, 12);
+    const mat = new THREE.MeshBasicMaterial({ color:0xe8823a });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(pt);
+    scene.add(mesh);
+    measureMarkers.push(mesh);
+  }
+  function handleToolClick(clientX, clientY){
+    const pt = pickPoint(clientX, clientY);
+    if(!pt) return;
+    if(activeTool==='focus'){
+      desired.target.copy(pt);
+      return;
+    }
+    if(activeTool==='measure'){
+      if(measurePoints.length>=2) clearMeasure();
+      measurePoints.push(pt);
+      addMeasureMarker(pt);
+      if(measurePoints.length===2){
+        const d = measurePoints[0].distanceTo(measurePoints[1]);
+        const geo = new THREE.BufferGeometry().setFromPoints(measurePoints);
+        measureLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ color:0xe8823a }));
+        scene.add(measureLine);
+        const chip = document.getElementById('measureResult');
+        chip.innerHTML = `${fmtMeters(d)} <button type="button" id="measureClearBtn">✕</button>`;
+        chip.classList.add('visible');
+        document.getElementById('measureClearBtn').addEventListener('click', clearMeasure);
+      }
+    }
+  }
+  function setActiveTool(tool){
+    activeTool = (activeTool===tool) ? null : tool;
+    document.getElementById('toolMeasure').classList.toggle('active', activeTool==='measure');
+    document.getElementById('toolFocus').classList.toggle('active', activeTool==='focus');
+    viewportEl.classList.toggle('tool-active', !!activeTool);
+    if(activeTool!=='measure') clearMeasure();
+  }
+  document.getElementById('toolMeasure').addEventListener('click', ()=> setActiveTool('measure'));
+  document.getElementById('toolFocus').addEventListener('click', ()=> setActiveTool('focus'));
+  document.getElementById('toolFly').addEventListener('click', ()=>{
+    if(cameraMode==='fly') exitFlyMode(); else enterFlyMode();
+  });
 
   window.addEventListener('resize', ()=>{
     camera.aspect = window.innerWidth/window.innerHeight;
@@ -500,7 +828,8 @@
 
   (function animate(){
     requestAnimationFrame(animate);
-    tickControls();
+    const dt = Math.min(clock.getDelta(), 0.05);
+    if(cameraMode==='fly') tickFly(dt); else tickControls();
     renderer.render(scene, camera);
   })();
 
@@ -816,9 +1145,7 @@
   function buildFromParsed(parsed, fileInfo, opts){
     opts = opts || {};
     if(pointsObject){ scene.remove(pointsObject); pointsObject.geometry.dispose(); pointsObject.material.dispose(); pointsObject=null; }
-    if(lodObject){ scene.remove(lodObject); lodObject.geometry.dispose(); lodObject.material.dispose(); lodObject=null; }
     if(gridHelper){ scene.remove(gridHelper); gridHelper=null; }
-    interacting = false;
 
     const n = parsed.count;
     const pos64 = parsed.positions;
@@ -833,12 +1160,27 @@
     const sizeX = maxX-minX, sizeY = maxY-minY, sizeZ = maxZ-minZ;
     diag = Math.sqrt(sizeX*sizeX+sizeY*sizeY+sizeZ*sizeZ) || 1;
 
+    // порядок точек в буфере: сначала равномерно разреженная подвыборка (каждая N-я
+    // точка) — она же "превью" для LOD, — затем все остальные. Так setDrawRange(0,k)
+    // всегда показывает представительную выборку всего облака, а не первый кусок файла
+    const previewCount = Math.min(n, LOD_TARGET);
+    const orderMap = new Int32Array(n);
+    if(n <= LOD_TARGET){
+      for(let i=0;i<n;i++) orderMap[i]=i;
+    } else {
+      const stride = Math.ceil(n/LOD_TARGET);
+      let w=0;
+      for(let i=0;i<n;i+=stride) orderMap[w++]=i;
+      for(let i=0;i<n;i++){ if(i%stride!==0) orderMap[w++]=i; }
+    }
+
     const swap = document.getElementById('swapAxes').checked;
     const posF32 = new Float32Array(n*3);
-    for(let i=0;i<n;i++){
+    for(let k=0;k<n;k++){
+      const i = orderMap[k];
       const x = pos64[i*3]-cx, y = pos64[i*3+1]-cy, z = pos64[i*3+2]-cz;
-      if(swap){ posF32[i*3]=x; posF32[i*3+1]=z; posF32[i*3+2]=-y; }
-      else    { posF32[i*3]=x; posF32[i*3+1]=y; posF32[i*3+2]=z; }
+      if(swap){ posF32[k*3]=x; posF32[k*3+1]=z; posF32[k*3+2]=-y; }
+      else    { posF32[k*3]=x; posF32[k*3+1]=y; posF32[k*3+2]=z; }
     }
 
     const geometry = new THREE.BufferGeometry();
@@ -847,37 +1189,18 @@
     const colorAttr = new Float32Array(n*3);
     geometry.setAttribute('color', new THREE.BufferAttribute(colorAttr, 3));
 
-    const material = new THREE.PointsMaterial({ size: computePointSize(n), vertexColors:true, sizeAttenuation:true });
+    // фиксированный размер в пикселях экрана (без "затухания по расстоянию") —
+    // при приближении камеры точки больше не раздуваются и не забивают видеокарту
+    const material = new THREE.PointsMaterial({ size: computePointSize(), vertexColors:true, sizeAttenuation:false });
     pointsObject = new THREE.Points(geometry, material);
+    drawCount = n;
+    geometry.setDrawRange(0, drawCount);
     scene.add(pointsObject);
-
-    // облегчённая версия для плавного вращения/зума на слабых ПК — те же данные,
-    // просто каждая N-ная точка; полный набор точек (n) при этом никуда не девается
-    let lodIndices = null;
-    if(n > LOD_TARGET){
-      const lodStride = Math.ceil(n / LOD_TARGET);
-      const lodCount = Math.ceil(n / lodStride);
-      lodIndices = new Int32Array(lodCount);
-      const lodPos = new Float32Array(lodCount*3);
-      let lo=0;
-      for(let i=0;i<n;i+=lodStride){
-        lodIndices[lo]=i;
-        lodPos[lo*3]=posF32[i*3]; lodPos[lo*3+1]=posF32[i*3+1]; lodPos[lo*3+2]=posF32[i*3+2];
-        lo++;
-      }
-      const lodGeometry = new THREE.BufferGeometry();
-      lodGeometry.setAttribute('position', new THREE.BufferAttribute(lodPos, 3));
-      lodGeometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(lodCount*3), 3));
-      const lodMaterial = new THREE.PointsMaterial({ size: isWeakDevice ? 1.6 : 2.2, vertexColors:true, sizeAttenuation:false });
-      lodObject = new THREE.Points(lodGeometry, lodMaterial);
-      lodObject.visible = false;
-      scene.add(lodObject);
-    }
 
     currentData = {
       n, hasRGB: !!parsed.colors, rgb: parsed.colors,
       hasIntensity: !!parsed.intensity, intensity: parsed.intensity, intensityRange: parsed.intensityRange,
-      swap, lodIndices
+      swap, orderMap, previewCount
     };
     // store min/max height in the *rendered* (possibly swapped) frame for the height ramp
     let hMin, hMax;
@@ -921,63 +1244,57 @@
     buildColorModeSeg();
     document.getElementById('hud').classList.add('visible');
     document.getElementById('hint').classList.add('visible');
+    document.getElementById('toolbar').classList.add('visible');
+    if(cameraMode==='fly') exitFlyMode();
+    clearMeasure();
+    if(activeTool){ activeTool=null; document.getElementById('toolMeasure').classList.remove('active'); document.getElementById('toolFocus').classList.remove('active'); viewportEl.classList.remove('tool-active'); }
   }
 
-  function computePointSize(n){
-    n = n || (currentData ? currentData.n : 500000);
+  function computePointSize(){
     const slider = parseFloat(document.getElementById('pointSize').value);
-    // оцениваем средний интервал между точками по объёму bbox и их числу —
-    // это даёт точки без зазоров между собой (чётче), но без лишнего наложения
-    const spacing = diag / Math.cbrt(Math.max(n, 8));
-    return Math.max(0.0006, spacing*0.85*slider);
+    return slider * Math.min(renderer.getPixelRatio(), 2);
   }
 
   function applyColorMode(mode){
     if(!pointsObject) return;
     colorMode = mode;
     const n = currentData.n;
+    const order = currentData.orderMap;
     const colorAttr = pointsObject.geometry.getAttribute('color');
     const arr = colorAttr.array;
 
     if(mode==='rgb' && currentData.hasRGB){
-      arr.set(currentData.rgb);
+      const src = currentData.rgb;
+      for(let k=0;k<n;k++){
+        const i = order[k];
+        arr[k*3]=src[i*3]; arr[k*3+1]=src[i*3+1]; arr[k*3+2]=src[i*3+2];
+      }
     } else if(mode==='intensity' && currentData.hasIntensity){
+      const src = currentData.intensity;
       const [iMin,iMax] = currentData.intensityRange;
       const range = (iMax-iMin) || 1;
-      for(let i=0;i<n;i++){
-        const t = (currentData.intensity[i]-iMin)/range;
+      for(let k=0;k<n;k++){
+        const i = order[k];
+        const t = (src[i]-iMin)/range;
         const c = rampSample(INTENSITY_RAMP, t);
-        arr[i*3]=c[0]; arr[i*3+1]=c[1]; arr[i*3+2]=c[2];
+        arr[k*3]=c[0]; arr[k*3+1]=c[1]; arr[k*3+2]=c[2];
       }
     } else if(mode==='solid'){
-      for(let i=0;i<n;i++){ arr[i*3]=SOLID_COLOR[0]; arr[i*3+1]=SOLID_COLOR[1]; arr[i*3+2]=SOLID_COLOR[2]; }
+      for(let k=0;k<n;k++){ arr[k*3]=SOLID_COLOR[0]; arr[k*3+1]=SOLID_COLOR[1]; arr[k*3+2]=SOLID_COLOR[2]; }
     } else {
-      // height (fallback default)
+      // height (fallback default) — позиции уже в переупорядоченном виде, доп. индексация не нужна
       colorMode = 'height';
       const posArr = currentData.posF32;
       const [hMin,hMax] = currentData.heightRange;
       const range = (hMax-hMin) || 1;
-      for(let i=0;i<n;i++){
-        const h = posArr[i*3+1]; // Y is "up" in render space
+      for(let k=0;k<n;k++){
+        const h = posArr[k*3+1]; // Y is "up" in render space
         const t = (h-hMin)/range;
         const c = rampSample(HEIGHT_RAMP, t);
-        arr[i*3]=c[0]; arr[i*3+1]=c[1]; arr[i*3+2]=c[2];
+        arr[k*3]=c[0]; arr[k*3+1]=c[1]; arr[k*3+2]=c[2];
       }
     }
     colorAttr.needsUpdate = true;
-
-    // копируем цвета в облегчённую версию по тем же индексам
-    if(lodObject && currentData.lodIndices){
-      const lodColorAttr = lodObject.geometry.getAttribute('color');
-      const lodArr = lodColorAttr.array;
-      const idx = currentData.lodIndices;
-      for(let k=0;k<idx.length;k++){
-        const i = idx[k];
-        lodArr[k*3]=arr[i*3]; lodArr[k*3+1]=arr[i*3+1]; lodArr[k*3+2]=arr[i*3+2];
-      }
-      lodColorAttr.needsUpdate = true;
-    }
-
     updateLegend();
     buildColorModeSeg();
   }
@@ -1351,9 +1668,6 @@
   document.getElementById('showGrid').addEventListener('change', e=>{
     if(gridHelper) gridHelper.visible = e.target.checked;
   });
-  const lowQualityCheckbox = document.getElementById('lowQuality');
-  lowQualityCheckbox.checked = isWeakDevice;
-  lowQualityCheckbox.addEventListener('change', e=>{ forceLowQuality = e.target.checked; });
   document.getElementById('hudToggle').addEventListener('click', ()=>{
     document.getElementById('hud').classList.toggle('expanded');
   });
