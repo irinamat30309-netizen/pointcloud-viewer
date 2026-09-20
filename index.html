@@ -214,6 +214,19 @@
   #measureLabel.pending{ opacity:0.75; border-style:dashed; }
   #measureLabel button{ padding:1px 6px; font-size:11px; border-radius:5px; pointer-events:auto; }
 
+  .measure-dot{
+    position:absolute; z-index:22; width:11px; height:11px; margin:-5.5px 0 0 -5.5px;
+    border-radius:50%; background:var(--accent); border:2px solid rgba(20,23,26,0.9);
+    box-shadow:0 0 0 3px rgba(232,130,58,0.28); pointer-events:none;
+  }
+
+  #magnifier{
+    position:absolute; z-index:30; width:150px; height:150px; border-radius:50%;
+    border:2px solid var(--accent); box-shadow:0 10px 30px rgba(0,0,0,0.5);
+    pointer-events:none; display:none; background:#0a0d0f;
+  }
+  #magnifier.visible{ display:block; }
+
   #viewport.tool-active canvas{ cursor:crosshair; }
 
   /* ---------- панель разреза (попап рядом с панелью инструментов) ---------- */
@@ -462,7 +475,7 @@
         <line x1="16" y1="9.5" x2="16" y2="12.2" transform="rotate(-35 12 12)"/>
       </svg>
     </button>
-    <button type="button" class="tool-btn" id="toolAngle" title="Измерить угол">
+    <button type="button" class="tool-btn" id="toolAngle" title="Измерить угол: точка → вершина → точка">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
         <path d="M5 5v14h14"/>
         <path d="M5 13a8 8 0 0 1 6 6"/>
@@ -497,6 +510,7 @@
   </div>
 
   <div id="measureLabel"></div>
+  <canvas id="magnifier" width="150" height="150"></canvas>
 
   <div id="joystick">
     <div class="joy-base"><div class="joy-knob" id="joyKnob"></div></div>
@@ -893,21 +907,26 @@
   dom.addEventListener('contextmenu', e=>e.preventDefault());
   dom.addEventListener('mousedown', e=>{
     if(!currentData) return;
-    if(e.button===0){ dragging=true; mouseDownX=e.clientX; mouseDownY=e.clientY; }
+    if(e.button===0){
+      if(activeTool && cameraMode==='orbit'){
+        // инструмент активен: точка ставится сразу по нажатию, камера не крутится —
+        // раньше можно было случайно "провернуть" вид между двумя кликами и попасть не туда
+        handleToolClick(e.clientX, e.clientY);
+      } else {
+        dragging=true; mouseDownX=e.clientX; mouseDownY=e.clientY;
+      }
+    }
     else if(e.button===2 || e.button===1){ panning=true; }
     lastX=e.clientX; lastY=e.clientY;
     inputActive = true;
   });
-  window.addEventListener('mouseup', e=>{
-    if(dragging && cameraMode==='orbit' && activeTool){
-      const moved = Math.hypot(e.clientX-mouseDownX, e.clientY-mouseDownY);
-      if(moved<6) handleToolClick(e.clientX, e.clientY);
-    }
+  window.addEventListener('mouseup', ()=>{
     dragging=false; panning=false; inputActive=false;
   });
-  window.addEventListener('mouseleave', ()=>{ dragging=false; panning=false; inputActive=false; });
+  window.addEventListener('mouseleave', ()=>{ dragging=false; panning=false; inputActive=false; magCanvas.classList.remove('visible'); });
   window.addEventListener('mousemove', e=>{
     hoverX=e.clientX; hoverY=e.clientY; hasHover=true;
+    updateMagnifier(e.clientX, e.clientY);
     if(!currentData) return;
     const dx = e.clientX-lastX, dy = e.clientY-lastY;
     lastX=e.clientX; lastY=e.clientY;
@@ -975,6 +994,11 @@
     e.preventDefault();
     inputActive = true;
     if(e.touches.length===1){
+      if(activeTool && cameraMode==='orbit'){
+        handleToolClick(e.touches[0].clientX, e.touches[0].clientY);
+        touchMode = null;
+        return;
+      }
       touchMode='rotate'; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY;
       touchDownX=lastX; touchDownY=lastY;
     }
@@ -1017,12 +1041,7 @@
       lastTouchMidX = midX; lastTouchMidY = midY;
     }
   }, {passive:false});
-  dom.addEventListener('touchend', e=>{
-    if(touchMode==='rotate' && cameraMode==='orbit' && activeTool && e.changedTouches[0]){
-      const t = e.changedTouches[0];
-      const moved = Math.hypot(t.clientX-touchDownX, t.clientY-touchDownY);
-      if(moved<8) handleToolClick(t.clientX, t.clientY);
-    }
+  dom.addEventListener('touchend', ()=>{
     touchMode=null; inputActive=false;
   });
 
@@ -1098,6 +1117,40 @@
     return hits.length ? hits[0].point.clone() : null;
   }
 
+  // лупа: увеличенный кусок уже отрисованной картинки вокруг курсора — помогает
+  // точно видеть, по какой именно точке целишься, особенно в густых местах
+  const magCanvas = document.getElementById('magnifier');
+  const magCtx = magCanvas.getContext('2d');
+  const MAG_SIZE = 150, MAG_SRC_CSS = 26; // ~5.8x увеличение
+  function updateMagnifier(clientX, clientY){
+    const showFor = activeTool==='distance' || activeTool==='angle' || activeTool==='focus';
+    if(!currentData || !showFor || dragging || panning){ magCanvas.classList.remove('visible'); return; }
+    const rect = dom.getBoundingClientRect();
+    if(clientX<rect.left || clientX>rect.right || clientY<rect.top || clientY>rect.bottom){
+      magCanvas.classList.remove('visible'); return;
+    }
+    const dpr = renderer.getPixelRatio();
+    const sx = (clientX - rect.left - MAG_SRC_CSS/2) * dpr;
+    const sy = (clientY - rect.top  - MAG_SRC_CSS/2) * dpr;
+    const sSize = MAG_SRC_CSS * dpr;
+    magCtx.imageSmoothingEnabled = false;
+    magCtx.clearRect(0,0,MAG_SIZE,MAG_SIZE);
+    try{ magCtx.drawImage(renderer.domElement, sx, sy, sSize, sSize, 0, 0, MAG_SIZE, MAG_SIZE); }
+    catch(err){ /* кадр временно недоступен — просто пропускаем */ }
+    magCtx.strokeStyle = 'rgba(232,130,58,0.95)';
+    magCtx.lineWidth = 1;
+    magCtx.beginPath();
+    magCtx.moveTo(MAG_SIZE/2-9, MAG_SIZE/2); magCtx.lineTo(MAG_SIZE/2+9, MAG_SIZE/2);
+    magCtx.moveTo(MAG_SIZE/2, MAG_SIZE/2-9); magCtx.lineTo(MAG_SIZE/2, MAG_SIZE/2+9);
+    magCtx.stroke();
+    // рядом с курсором, но со сдвигом, чтобы не закрывать само место клика
+    let mx = clientX + 24, my = clientY - MAG_SIZE - 24;
+    if(my < 8) my = clientY + 24;
+    if(mx + MAG_SIZE > window.innerWidth - 8) mx = clientX - MAG_SIZE - 24;
+    magCanvas.style.left = mx+'px'; magCanvas.style.top = my+'px';
+    magCanvas.classList.add('visible');
+  }
+
   function worldToScreen(vec3){
     const v = vec3.clone().project(camera);
     const rect = dom.getBoundingClientRect();
@@ -1114,19 +1167,28 @@
   function clearMeasure(){
     measurePoints = [];
     measureLive = null;
-    measureMarkers.forEach(m=>{ scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
+    measureMarkers.forEach(el=> el.remove());
     measureMarkers = [];
     measureLines.forEach(l=>{ if(l){ scene.remove(l); l.geometry.dispose(); l.material.dispose(); } });
     measureLines = [];
     document.getElementById('measureLabel').classList.remove('visible');
   }
+  function syncMarkerPositions(){
+    for(let i=0;i<measureMarkers.length;i++){
+      const pt = measurePoints[i];
+      if(!pt) continue;
+      const scr = worldToScreen(pt);
+      measureMarkers[i].style.left = scr.x+'px';
+      measureMarkers[i].style.top = scr.y+'px';
+      measureMarkers[i].style.display = scr.inFront ? 'block' : 'none';
+    }
+  }
   function addMeasureMarker(pt){
-    const geo = new THREE.SphereGeometry(Math.max(diag*0.004, 0.01), 12, 12);
-    const mat = new THREE.MeshBasicMaterial({ color:0xe8823a });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.copy(pt);
-    scene.add(mesh);
-    measureMarkers.push(mesh);
+    // маленькая точка фиксированного размера на экране (не 3D-объект — не раздувается при зуме)
+    const el = document.createElement('div');
+    el.className = 'measure-dot';
+    document.getElementById('app').appendChild(el);
+    measureMarkers.push(el);
   }
   function ensureLine(i, a, b){
     if(!measureLines[i]){
@@ -1165,18 +1227,26 @@
   }
 
   // покадрово: пока не хватает точек — тянем "живую" следующую точку за курсором
-  // (только для мыши; на тач-устройствах предпросмотра нет — просто тапы по очереди)
+  // (только для мыши; на тач-устройствах предпросмотра нет — просто тапы по очереди).
+  // Raycast против всего облака не бесплатный — считаем его только если курсор реально
+  // сдвинулся и не чаще ~30 раз/сек, а не 60 раз/сек вхолостую на неподвижной мыши.
+  let lastRayX=-1, lastRayY=-1, lastRayTime=0;
   function updateMeasureLive(){
     const need = requiredPoints();
     if(!need || measurePoints.length===0 || measurePoints.length>=need || cameraMode!=='orbit' || dragging || panning || !hasHover){
       measureLive = null;
       return;
     }
+    const moved = Math.hypot(hoverX-lastRayX, hoverY-lastRayY) > 1.5;
+    const now = performance.now();
+    if(!moved && (now-lastRayTime) < 33) return; // используем предыдущий результат
+    lastRayX=hoverX; lastRayY=hoverY; lastRayTime=now;
     measureLive = pickPoint(hoverX, hoverY);
   }
 
   // покадрово: рисуем/обновляем линию(и) и подпись прямо в сцене
   function refreshMeasureVisual(){
+    syncMarkerPositions();
     if(activeTool==='distance'){
       let a=null,b=null,final=false;
       if(measurePoints.length===2){ a=measurePoints[0]; b=measurePoints[1]; final=true; }
@@ -1186,23 +1256,31 @@
       measureLines[0].material.opacity = final?1:0.55;
       showLabel(a.clone().add(b).multiplyScalar(0.5), fmtMeters(a.distanceTo(b)), final);
     } else if(activeTool==='angle'){
-      if(measurePoints.length===0){ hideLinesFrom(0); document.getElementById('measureLabel').classList.remove('visible'); return; }
-      const vertex = measurePoints[0];
-      const p1 = measurePoints[1] || measureLive;
-      if(!p1){ hideLinesFrom(0); document.getElementById('measureLabel').classList.remove('visible'); return; }
-      ensureLine(0, vertex, p1);
-      const p2 = measurePoints[2] || (measurePoints.length===2 ? measureLive : null);
-      if(!p2){
+      // порядок кликов: точка → вершина → точка (вершина — вторая, средняя точка,
+      // как в CloudCompare) — так угол меряется именно там, где кликнули "на углу"
+      const A = measurePoints[0];
+      if(measurePoints.length<2){
+        const b = measurePoints[1] || measureLive;
+        if(!A || !b){ hideLinesFrom(0); document.getElementById('measureLabel').classList.remove('visible'); return; }
+        ensureLine(0, A, b); hideLinesFrom(1);
+        measureLines[0].material.opacity = 0.55;
+        document.getElementById('measureLabel').classList.remove('visible');
+        return;
+      }
+      const vertex = measurePoints[1];
+      const C = measurePoints[2] || measureLive;
+      ensureLine(0, vertex, A);
+      if(!C){
         hideLinesFrom(1);
         measureLines[0].material.opacity = 0.55;
         document.getElementById('measureLabel').classList.remove('visible');
         return;
       }
-      ensureLine(1, vertex, p2);
+      ensureLine(1, vertex, C);
       const final = measurePoints.length===3;
       measureLines[0].material.opacity = final?1:0.55;
       measureLines[1].material.opacity = final?1:0.55;
-      showLabel(vertex, computeAngleDeg(vertex,p1,p2).toFixed(1)+'°', final);
+      showLabel(vertex, computeAngleDeg(vertex,A,C).toFixed(1)+'°', final);
     } else {
       hideLinesFrom(0);
       document.getElementById('measureLabel').classList.remove('visible');
@@ -1216,6 +1294,7 @@
     document.getElementById('toolFocus').classList.toggle('active', activeTool==='focus');
     viewportEl.classList.toggle('tool-active', !!activeTool);
     if(activeTool!=='distance' && activeTool!=='angle') clearMeasure();
+    if(!activeTool) magCanvas.classList.remove('visible');
   }
   document.getElementById('toolDistance').addEventListener('click', ()=> setActiveTool('distance'));
   document.getElementById('toolAngle').addEventListener('click', ()=> setActiveTool('angle'));
