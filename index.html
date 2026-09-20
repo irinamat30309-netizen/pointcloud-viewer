@@ -34,7 +34,7 @@
     z-index:20;
   }
   #brand{ display:flex; align-items:baseline; gap:10px; pointer-events:none; }
-  #brand .mark{ width:9px; height:9px; border-radius:1px; background:var(--accent); transform:rotate(45deg); flex:none; }
+  #brand .mark{ flex:none; display:block; }
   #brand .name{ font-size:14px; font-weight:600; letter-spacing:0.01em; }
   #brand .sub{ font-size:12px; color:var(--muted); font-family:var(--mono); }
   #topbar .actions{ display:flex; gap:8px; pointer-events:auto; }
@@ -230,10 +230,10 @@
     background:var(--panel-solid); border:1px solid var(--border); border-radius:6px; color:var(--text);
   }
   .cp-axis.active{ border-color:var(--accent); background:rgba(232,130,58,0.18); color:var(--accent); }
-  .cp-slider-row{ display:flex; align-items:center; gap:8px; }
+  .cp-slider-row{ display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .cp-slider-row:last-child{ margin-bottom:0; }
+  .cp-slider-row label{ font-size:11px; color:var(--muted); width:30px; flex:none; }
   .cp-slider-row input[type=range]{ flex:1; }
-  #clipFlipBtn{ width:32px; height:32px; padding:0; justify-content:center; flex:none; font-size:14px; }
-  #clipFlipBtn.active{ border-color:var(--accent); color:var(--accent); }
 
   /* ---------- виртуальный джойстик (режим полёта, тач) ---------- */
   #joystick{
@@ -343,7 +343,21 @@
 
   <div id="topbar">
     <div id="brand">
-      <div class="mark"></div>
+      <svg class="mark" viewBox="0 0 24 24" width="19" height="19">
+        <defs>
+          <linearGradient id="logoGrad" x1="1" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#f2a35f"/>
+            <stop offset="100%" stop-color="#6fa8c9"/>
+          </linearGradient>
+        </defs>
+        <ellipse cx="12" cy="12.5" rx="10" ry="3.6" fill="none" stroke="url(#logoGrad)" stroke-width="1" opacity="0.55" transform="rotate(-18 12 12.5)"/>
+        <circle cx="6.2" cy="7.8" r="1" fill="url(#logoGrad)"/>
+        <circle cx="18.3" cy="6.6" r="1.2" fill="url(#logoGrad)"/>
+        <circle cx="4.6" cy="16.4" r="1.1" fill="url(#logoGrad)"/>
+        <circle cx="19.4" cy="16.8" r="0.9" fill="url(#logoGrad)"/>
+        <circle cx="12" cy="3.6" r="0.8" fill="url(#logoGrad)"/>
+        <circle cx="12" cy="12" r="3" fill="url(#logoGrad)"/>
+      </svg>
       <div class="name">Point Cloud</div>
       <div class="sub">LAS · PLY viewer</div>
     </div>
@@ -473,8 +487,12 @@
       <button type="button" class="cp-axis" data-axis="z">Перед/зад</button>
     </div>
     <div class="cp-slider-row">
-      <button type="button" id="clipFlipBtn" title="Поменять сторону разреза">⇅</button>
-      <input type="range" id="clipSlider" min="0" max="100" step="0.5" value="100">
+      <label>Низ</label>
+      <input type="range" id="clipSliderLow" min="0" max="100" step="0.5" value="0">
+    </div>
+    <div class="cp-slider-row">
+      <label>Верх</label>
+      <input type="range" id="clipSliderHigh" min="0" max="100" step="0.5" value="100">
     </div>
   </div>
 
@@ -541,13 +559,12 @@
     varying vec3 vClipPos;
     uniform float clipEnabled;
     uniform float clipAxis; // 0 = X, 1 = Y (высота), 2 = Z
-    uniform float clipFlip; // 0 = скрыть больше значения, 1 = скрыть меньше
-    uniform float clipValue;
+    uniform float clipLow;  // скрыть всё, что меньше этого значения
+    uniform float clipHigh; // скрыть всё, что больше этого значения
     void main(){
       if(clipEnabled > 0.5){
         float coord = clipAxis < 0.5 ? vClipPos.x : (clipAxis < 1.5 ? vClipPos.y : vClipPos.z);
-        bool hide = clipFlip > 0.5 ? (coord < clipValue) : (coord > clipValue);
-        if(hide) discard;
+        if(coord < clipLow || coord > clipHigh) discard;
       }
       vec2 c = gl_PointCoord - vec2(0.5);
       if(dot(c,c) > 0.25) discard;
@@ -572,8 +589,8 @@
         maxSize: { value: (isWeakDevice?7:11)*pr },
         clipEnabled: { value: 0 },
         clipAxis: { value: 1 },
-        clipFlip: { value: 0 },
-        clipValue: { value: 1e9 },
+        clipLow: { value: -1e9 },
+        clipHigh: { value: 1e9 },
       },
       vertexShader: POINTS_VERT,
       fragmentShader: POINTS_FRAG,
@@ -1634,7 +1651,7 @@
 
     // разрез: если уже был включён (смена детализации/осей того же файла) — пересчитываем
     // под новые данные, если нет — выключаем (загрузили новый файл)
-    if(!opts.keepClip){ clipAxis = null; clipFlip = false; }
+    if(!opts.keepClip){ clipAxis = null; }
     applyClipUniforms();
 
     const wantedMode = opts.preserveColorMode;
@@ -1684,10 +1701,10 @@
     }
     if(!opts.keepClip){
       document.querySelectorAll('.cp-axis').forEach(b=>b.classList.remove('active'));
-      document.getElementById('clipFlipBtn').classList.remove('active');
       document.getElementById('toolClip').classList.remove('active');
       document.getElementById('clipPanel').classList.remove('visible');
-      document.getElementById('clipSlider').value = 100;
+      document.getElementById('clipSliderLow').value = 0;
+      document.getElementById('clipSliderHigh').value = 100;
     }
   }
 
@@ -2172,17 +2189,17 @@
     if(gridHelper) gridHelper.visible = e.target.checked;
   });
   let clipAxis = null;  // null | 'x' | 'y' | 'z'
-  let clipFlip = false;
   function applyClipUniforms(){
     if(!pointsObject || !pointsObject.material.uniforms || !currentData) return;
     const u = pointsObject.material.uniforms;
     if(!clipAxis){ u.clipEnabled.value = 0; return; }
     u.clipEnabled.value = 1;
     u.clipAxis.value = clipAxis==='x' ? 0 : clipAxis==='y' ? 1 : 2;
-    u.clipFlip.value = clipFlip ? 1 : 0;
     const [mn,mx] = currentData.axisRanges[clipAxis];
-    const pct = parseFloat(document.getElementById('clipSlider').value);
-    u.clipValue.value = mn + (pct/100)*(mx-mn);
+    const pctLow = parseFloat(document.getElementById('clipSliderLow').value);
+    const pctHigh = parseFloat(document.getElementById('clipSliderHigh').value);
+    u.clipLow.value  = mn + (Math.min(pctLow,pctHigh)/100)*(mx-mn);
+    u.clipHigh.value = mn + (Math.max(pctLow,pctHigh)/100)*(mx-mn);
   }
   document.getElementById('toolClip').addEventListener('click', ()=>{
     document.getElementById('clipPanel').classList.toggle('visible');
@@ -2193,16 +2210,15 @@
       clipAxis = (clipAxis===axis) ? null : axis;
       document.querySelectorAll('.cp-axis').forEach(b=> b.classList.toggle('active', b.dataset.axis===clipAxis));
       document.getElementById('toolClip').classList.toggle('active', !!clipAxis);
-      if(clipAxis) document.getElementById('clipSlider').value = 100;
+      if(clipAxis){
+        document.getElementById('clipSliderLow').value = 0;
+        document.getElementById('clipSliderHigh').value = 100;
+      }
       applyClipUniforms();
     });
   });
-  document.getElementById('clipFlipBtn').addEventListener('click', e=>{
-    clipFlip = !clipFlip;
-    e.currentTarget.classList.toggle('active', clipFlip);
-    applyClipUniforms();
-  });
-  document.getElementById('clipSlider').addEventListener('input', applyClipUniforms);
+  document.getElementById('clipSliderLow').addEventListener('input', applyClipUniforms);
+  document.getElementById('clipSliderHigh').addEventListener('input', applyClipUniforms);
   // клик вне панели разреза — закрываем её
   window.addEventListener('mousedown', e=>{
     const panel = document.getElementById('clipPanel');
