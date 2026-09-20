@@ -72,71 +72,79 @@
 
   .landing{
     display:flex; align-items:flex-start; justify-content:center; flex-wrap:wrap;
-    gap:18px; max-width:760px; width:100%;
+    gap:22px; max-width:940px; width:100%;
   }
 
   .hero{
-    display:flex; flex-direction:column; align-items:center; gap:11px; text-align:center;
+    display:flex; flex-direction:column; align-items:center; gap:14px; text-align:center;
     background:rgba(17,20,23,0.6); backdrop-filter:blur(18px);
-    border:1px solid var(--border); border-radius:18px;
-    padding:28px 26px; flex:0 0 280px; max-width:280px;
+    border:1px solid var(--border); border-radius:20px;
+    padding:38px 36px; flex:0 0 340px; max-width:340px;
     box-shadow:0 24px 70px rgba(0,0,0,0.4);
     transition:border-color .15s ease;
   }
   #dropzone.dragover .hero{ border-color:var(--accent); }
   .crosshair{
-    width:48px; height:48px; position:relative; margin-bottom:2px;
+    width:58px; height:58px; position:relative; margin-bottom:2px;
     border:1px solid var(--border); border-radius:50%;
     display:flex; align-items:center; justify-content:center;
     transition:border-color .15s ease;
   }
   .crosshair::before, .crosshair::after{ content:''; position:absolute; background:var(--border-soft); }
-  .crosshair::before{ width:1px; height:66px; }
-  .crosshair::after{ width:66px; height:1px; }
+  .crosshair::before{ width:1px; height:80px; }
+  .crosshair::after{ width:80px; height:1px; }
   .crosshair .dot{ width:5px; height:5px; border-radius:50%; background:var(--accent); z-index:2; }
   #dropzone.dragover .crosshair{ border-color:var(--accent); }
-  .hero h1{ font-size:17px; font-weight:600; margin:0; letter-spacing:-0.01em; }
-  .hero p{ font-size:12px; color:var(--muted); margin:0; line-height:1.55; }
-  .hero-actions{ display:flex; flex-direction:column; gap:8px; width:100%; margin-top:2px; }
-  .hero-actions button{ padding:9px 16px; font-size:12.5px; justify-content:center; width:100%; }
-  .hero .formats{ font-family:var(--mono); font-size:10.5px; color:var(--accent2); letter-spacing:0.03em; margin-top:1px; }
+  .hero h1{ font-size:20px; font-weight:600; margin:0; letter-spacing:-0.01em; }
+  .hero p{ font-size:13px; color:var(--muted); margin:0; line-height:1.6; }
+  .hero-actions{ display:flex; flex-direction:column; gap:9px; width:100%; margin-top:4px; }
+  .hero-actions button{ padding:11px 18px; font-size:13.5px; justify-content:center; width:100%; }
+  .hero .formats{ font-family:var(--mono); font-size:11px; color:var(--accent2); letter-spacing:0.03em; margin-top:1px; }
   #fileInput{ display:none; }
 
   #dzProjects{
-    display:none; flex:1 1 280px; max-width:320px; align-self:stretch;
+    display:none; flex:1 1 360px; max-width:440px; align-self:stretch;
     background:rgba(17,20,23,0.55); backdrop-filter:blur(16px);
-    border:1px solid var(--border); border-radius:18px;
-    padding:18px 16px; box-shadow:0 24px 70px rgba(0,0,0,0.35);
+    border:1px solid var(--border); border-radius:20px;
+    padding:22px 20px; box-shadow:0 24px 70px rgba(0,0,0,0.35);
   }
-  #dzProjects .dzp-title{ font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:11px; }
+  #dzProjects .dzp-title{ font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:13px; }
   #dzProjectsList{
-    display:flex; flex-direction:column; gap:7px;
-    max-height:280px; overflow-y:auto; scrollbar-width:thin; padding-right:2px;
+    display:flex; flex-direction:column; gap:8px;
+    max-height:420px; overflow-y:auto; scrollbar-width:thin; padding-right:2px;
   }
+  #dzProjects .dzp-empty{ font-size:12.5px; color:var(--muted); line-height:1.6; padding:6px 2px; }
   .dzp-item{
-    display:flex; flex-direction:row; align-items:center; gap:10px; text-align:left; cursor:pointer;
+    display:flex; flex-direction:row; align-items:center; gap:11px; text-align:left; cursor:pointer;
     background:rgba(24,28,31,0.72);
-    border:1px solid var(--border); border-radius:10px;
-    padding:8px 10px; transition:border-color .15s ease, transform .15s ease, background .15s ease;
+    border:1px solid var(--border); border-radius:11px;
+    padding:10px 11px; transition:border-color .15s ease, transform .15s ease, background .15s ease;
   }
   .dzp-item:hover{ border-color:var(--accent-dim); background:rgba(31,35,39,0.85); transform:translateX(2px); }
   .dzp-item .dzp-thumb{
-    width:34px; height:34px; border-radius:8px; flex:none;
+    width:38px; height:38px; border-radius:9px; flex:none;
     background:linear-gradient(135deg, rgba(232,130,58,0.28), rgba(111,168,201,0.22));
     display:flex; align-items:center; justify-content:center; color:var(--accent2);
   }
-  .dzp-item .dzp-thumb svg{ width:20px; height:14px; }
+  .dzp-item .dzp-thumb svg{ width:22px; height:15px; }
   .dzp-item .dzp-meta{ display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0; flex:1; }
   .dzp-item .dzp-badge{
-    font-family:var(--mono); font-size:9px; letter-spacing:0.04em; color:var(--accent2);
+    font-family:var(--mono); font-size:9.5px; letter-spacing:0.04em; color:var(--accent2);
     background:rgba(111,168,201,0.1); border:1px solid rgba(111,168,201,0.25);
     padding:1px 6px; border-radius:4px; flex:none;
   }
-  .dzp-item .dzp-name{ width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+  .dzp-item .dzp-name{ width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px; }
+  .dzp-actions{ display:flex; gap:3px; flex:none; opacity:0.55; transition:opacity .15s ease; }
+  .dzp-item:hover .dzp-actions{ opacity:1; }
+  .dzp-act{
+    width:25px; height:25px; padding:0; justify-content:center; font-size:11.5px;
+    background:transparent; border:1px solid transparent; border-radius:6px; color:var(--muted);
+  }
+  .dzp-act:hover{ background:var(--panel-solid); border-color:var(--border); color:var(--text); }
 
-  @media (max-width: 640px){
+  @media (max-width: 760px){
     .landing{ flex-direction:column; align-items:center; }
-    .hero, #dzProjects{ flex:0 0 auto; width:100%; max-width:320px; }
+    .hero, #dzProjects{ flex:0 0 auto; width:100%; max-width:380px; }
   }
 
   /* ---------- HUD panel (bottom-left) ---------- */
@@ -1839,13 +1847,24 @@
   document.getElementById('btnOpen').addEventListener('click', ()=> fileInput.click());
   fileInput.addEventListener('change', e=>{ if(e.target.files[0]) handleFile(e.target.files[0]); });
 
+  function isFileDrag(e){
+    // отличаем настоящее перетаскивание файла извне от внутреннего drag'а
+    // (выделенный текст, элемент страницы и т.п.) — у тех типов "Files" нет
+    return !!(e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files'));
+  }
   ['dragenter','dragover'].forEach(evt=>{
-    window.addEventListener(evt, e=>{ e.preventDefault(); dropzone.classList.remove('hidden'); dropzone.classList.add('dragover'); });
+    window.addEventListener(evt, e=>{
+      if(!isFileDrag(e)) return;
+      e.preventDefault();
+      dropzone.classList.remove('hidden');
+      dropzone.classList.add('dragover');
+    });
   });
   ['dragleave'].forEach(evt=>{
     dropzone.addEventListener(evt, e=>{ dropzone.classList.remove('dragover'); });
   });
   window.addEventListener('drop', e=>{
+    if(!isFileDrag(e)) return;
     e.preventDefault();
     dropzone.classList.remove('dragover');
     if(e.dataTransfer.files && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
@@ -2003,49 +2022,91 @@
   });
 
   // список проектов/недавних прямо на стартовом экране (не нужно уходить на index.html)
-  function initProjectPicker(){
-    let recent = [];
-    try{ recent = JSON.parse(localStorage.getItem('pc_recent_v1') || '[]'); }catch(e){}
-
-    fetch('./projects.json', { cache:'no-store' })
+  const DZP_THUMB_SVG = `<svg viewBox="0 0 40 28" width="22" height="15" fill="currentColor"><circle cx="6" cy="14" r="1.7"/><circle cx="13" cy="7" r="1.7"/><circle cx="11" cy="20" r="1.7"/><circle cx="19" cy="5" r="1.7"/><circle cx="21" cy="16" r="1.7"/><circle cx="28" cy="9" r="1.7"/><circle cx="31" cy="19" r="1.7"/><circle cx="35" cy="8" r="1.7"/><circle cx="17" cy="23" r="1.7"/><circle cx="25" cy="22" r="1.7"/></svg>`;
+  let dzpCatalogCache = null;
+  function loadDzpCatalog(){
+    if(dzpCatalogCache) return Promise.resolve(dzpCatalogCache);
+    return fetch('./projects.json', { cache:'no-store' })
       .then(r=> r.ok ? r.json() : [])
       .catch(()=> [])
-      .then(catalog=>{
-        if(!Array.isArray(catalog)) catalog = [];
-        const seen = new Set();
-        const items = [];
-        recent.slice(0,5).forEach(it=>{
-          if(it && it.src && !seen.has(it.src)){ seen.add(it.src); items.push({ name:it.name, src:it.src, ext:it.ext }); }
-        });
-        catalog.forEach(it=>{
-          if(it && it.src && it.name && !seen.has(it.src) && items.length<8){ seen.add(it.src); items.push({ name:it.name, src:it.src, ext:guessExt(it.src) }); }
-        });
-        if(items.length===0) return;
-
-        const list = document.getElementById('dzProjectsList');
-        list.innerHTML = '';
-        items.forEach(it=>{
-          const row = document.createElement('div');
-          row.className = 'dzp-item';
-          row.innerHTML = `
-            <div class="dzp-thumb">
-              <svg viewBox="0 0 40 28" width="32" height="22" fill="currentColor"><circle cx="6" cy="14" r="1.7"/><circle cx="13" cy="7" r="1.7"/><circle cx="11" cy="20" r="1.7"/><circle cx="19" cy="5" r="1.7"/><circle cx="21" cy="16" r="1.7"/><circle cx="28" cy="9" r="1.7"/><circle cx="31" cy="19" r="1.7"/><circle cx="35" cy="8" r="1.7"/><circle cx="17" cy="23" r="1.7"/><circle cx="25" cy="22" r="1.7"/></svg>
-            </div>
-            <div class="dzp-meta">
-              <span class="dzp-badge">${(it.ext||'file').toUpperCase()}</span>
-              <span class="dzp-name"></span>
-            </div>`;
-          row.querySelector('.dzp-name').textContent = it.name || it.src;
-          row.addEventListener('click', (e)=>{
-            e.stopPropagation();
-            loadFromUrl(it.src);
-          });
-          list.appendChild(row);
-        });
-        document.getElementById('dzProjects').style.display = 'block';
-      });
+      .then(c=>{ dzpCatalogCache = Array.isArray(c) ? c : []; return dzpCatalogCache; });
   }
-  initProjectPicker();
+  function readRecentHistory(){
+    try{ return JSON.parse(localStorage.getItem('pc_recent_v1') || '[]'); }catch(e){ return []; }
+  }
+  function copyProjectLink(src){
+    const link = location.origin + location.pathname + '?src=' + encodeURIComponent(src);
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(link)
+        .then(()=> showError('Ссылка скопирована', 'info'))
+        .catch(()=> showError('Не удалось скопировать. Ссылка: ' + link));
+    } else {
+      showError('Скопируйте вручную: ' + link);
+    }
+  }
+
+  function renderProjectPicker(){
+    const recent = readRecentHistory();
+    loadDzpCatalog().then(catalog=>{
+      const seen = new Set();
+      const items = [];
+      recent.slice(0,10).forEach(it=>{
+        if(it && it.src && !seen.has(it.src)){ seen.add(it.src); items.push({ name:it.name, src:it.src, ext:it.ext, source:'recent' }); }
+      });
+      catalog.forEach(it=>{
+        if(it && it.src && it.name && !seen.has(it.src) && items.length<16){ seen.add(it.src); items.push({ name:it.name, src:it.src, ext:guessExt(it.src), source:'catalog' }); }
+      });
+
+      const panel = document.getElementById('dzProjects');
+      const list = document.getElementById('dzProjectsList');
+      if(items.length===0){ panel.style.display='none'; return; }
+      list.innerHTML = '';
+      items.forEach(it=>{
+        const row = document.createElement('div');
+        row.className = 'dzp-item';
+        row.innerHTML = `
+          <div class="dzp-thumb">${DZP_THUMB_SVG}</div>
+          <div class="dzp-meta">
+            <span class="dzp-badge">${(it.ext||'file').toUpperCase()}</span>
+            <span class="dzp-name"></span>
+          </div>
+          ${it.source==='recent' ? `
+          <div class="dzp-actions">
+            <button type="button" class="dzp-act" data-act="rename" title="Переименовать">✎</button>
+            <button type="button" class="dzp-act" data-act="copy" title="Скопировать ссылку">⧉</button>
+            <button type="button" class="dzp-act" data-act="del" title="Удалить из истории">✕</button>
+          </div>` : ''}
+        `;
+        row.querySelector('.dzp-name').textContent = it.name || it.src;
+        row.addEventListener('click', ()=> loadFromUrl(it.src));
+
+        if(it.source==='recent'){
+          row.querySelector('[data-act="rename"]').addEventListener('click', e=>{
+            e.stopPropagation();
+            const nn = prompt('Новое название проекта:', it.name || '');
+            if(nn && nn.trim()){
+              const l = readRecentHistory();
+              const idx = l.findIndex(x=>x.src===it.src);
+              if(idx>=0){ l[idx].name = nn.trim(); localStorage.setItem('pc_recent_v1', JSON.stringify(l)); renderProjectPicker(); }
+            }
+          });
+          row.querySelector('[data-act="copy"]').addEventListener('click', e=>{
+            e.stopPropagation();
+            copyProjectLink(it.src);
+          });
+          row.querySelector('[data-act="del"]').addEventListener('click', e=>{
+            e.stopPropagation();
+            const l = readRecentHistory().filter(x=>x.src!==it.src);
+            localStorage.setItem('pc_recent_v1', JSON.stringify(l));
+            renderProjectPicker();
+          });
+        }
+        list.appendChild(row);
+      });
+      panel.style.display = 'block';
+    });
+  }
+  renderProjectPicker();
 
   // автозагрузка, если страница открыта с ?src=... или #src=...
   (function checkInitialUrl(){
