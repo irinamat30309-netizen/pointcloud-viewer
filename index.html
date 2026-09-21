@@ -431,6 +431,15 @@
       <div class="hud-row"><span class="hud-label">Габариты (X×Y×Z)</span><span class="hud-value" id="hudBBox">—</span></div>
     </div>
 
+    <div class="hud-section">
+      <div class="hud-label" style="margin-bottom:7px;">Производительность</div>
+      <div class="seg" id="perfSeg">
+        <button type="button" data-perf="low">Слабый ПК</button>
+        <button type="button" data-perf="balanced">Баланс</button>
+        <button type="button" data-perf="high">Максимум</button>
+      </div>
+    </div>
+
     <div class="hud-section" id="qualitySection" style="display:none;">
       <div class="hud-label" style="margin-bottom:7px;">Детализация</div>
       <div class="seg" id="qualitySeg"></div>
@@ -452,6 +461,7 @@
       </div>
       <label class="checkbox-row"><input type="checkbox" id="swapAxes"><span>Поменять оси Y ↔ Z (если модель лежит на боку)</span></label>
       <label class="checkbox-row"><input type="checkbox" id="showGrid" checked><span>Показать сетку</span></label>
+      <label class="checkbox-row"><input type="checkbox" id="voxelFlyToggle" checked><span>Упрощённая модель в полёте (быстрее)</span></label>
       <div style="display:flex; gap:8px; margin-top:12px;">
         <button id="btnFit" style="flex:1; justify-content:center;">В кадр</button>
         <button id="btnReset" style="flex:1; justify-content:center;">Сброс вида</button>
@@ -543,9 +553,20 @@
   const isWeakDevice = isCoarsePointer || isLowMemory;
 
   const renderer = new THREE.WebGLRenderer({ antialias: !isWeakDevice, alpha:true, powerPreference:'high-performance', preserveDrawingBuffer:true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, isWeakDevice ? 1.5 : 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   viewportEl.appendChild(renderer.domElement);
+
+  // 3 пресета производительности — переключаются прямо в панели, без перезагрузки файла.
+  // Меняют: сколько точек держим при вращении/полёте, плотность пикселей и потолок
+  // размера точки. Антиалиасинг задаётся один раз при создании рендерера и не меняется
+  // "на лету" — это ограничение самого WebGL-контекста.
+  const PERF_PRESETS = {
+    low:      { lod:8000,   fly:28000,  pixelRatioCap:1.0,  minPx:0.8, maxPx:4.5, voxels:34  },
+    balanced: { lod:60000,  fly:320000, pixelRatioCap:1.75, minPx:1.0, maxPx:9,   voxels:70  },
+    high:     { lod:130000, fly:750000, pixelRatioCap:2,    minPx:1.1, maxPx:13,  voxels:110 },
+  };
+  let perfPreset = isWeakDevice ? 'low' : 'balanced';
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, PERF_PRESETS[perfPreset].pixelRatioCap));
 
   // Свой шейдер точек вместо THREE.PointsMaterial: размер точки растёт при
   // приближении камеры (как обычное затухание по расстоянию — облако остаётся
@@ -595,12 +616,13 @@
     const n = nPoints || (currentData ? currentData.n : 500000);
     const spacing = diag/Math.cbrt(Math.max(n,8));
     const pr = Math.min(renderer.getPixelRatio(), 2);
+    const pp = PERF_PRESETS[perfPreset];
     return new THREE.ShaderMaterial({
       uniforms: {
         size:    { value: Math.max(spacing*0.55*slider, 1e-6) },
         uScale:  { value: pointsScaleUniform() },
-        minSize: { value: (isWeakDevice?0.9:1.0)*pr },
-        maxSize: { value: (isWeakDevice?7:11)*pr },
+        minSize: { value: pp.minPx*pr },
+        maxSize: { value: pp.maxPx*pr },
         clipEnabled: { value: 0 },
         clipAxis: { value: 1 },
         clipLow: { value: -1e9 },
@@ -743,24 +765,33 @@
   let gridHelper = null;
   let currentData = null; // {positions(centered Float32), rgb, intensity, count, bboxSizeOriginal, minZorig,maxZorig}
   let diag = 10;
-  const LOD_TARGET = isWeakDevice ? 45000 : 90000; // сколько точек рисуем во время движения камеры
+  // "лёгкий" уровень — во время быстрого вращения/зума камерой орбитой (там всё равно
+  // не разглядеть детали, так что экономим по максимуму). "Плотный" — для движения в
+  // полёте, где детали как раз важны. Оба берутся из текущего пресета производительности.
+  let LOD_TARGET = PERF_PRESETS[perfPreset].lod;
+  let FLY_TARGET = PERF_PRESETS[perfPreset].fly;
   let wheelIdleTimer = null;
   let drawCount = 0; // сколько точек из геометрии реально рисуется прямо сейчас
 
+  function lodCountFor(tier){
+    if(!currentData) return 0;
+    if(tier==='low') return currentData.previewCount;
+    if(tier==='fly')  return currentData.flyPreviewCount;
+    return currentData.n;
+  }
   // плавно подгоняем реально отрисовываемое число точек к нужному —
-  // вниз (в LOD) мгновенно, вверх (обратно к полной детализации) за несколько
+  // вниз (в LOD) мгновенно, вверх (к большей детализации) за несколько
   // кадров маленькими порциями, чтобы не было ни лагов, ни рывка/скачка на экране
-  function tickDrawRange(wantLow){
+  function tickDrawRange(desiredCount){
     if(!pointsObject || !currentData) return;
     const n = currentData.n;
-    const lowCount = Math.min(currentData.previewCount, n);
-    const target = wantLow ? lowCount : n;
+    const target = Math.min(desiredCount, n);
     if(target === drawCount) return;
     if(target < drawCount){
       drawCount = target;
     } else {
       const remaining = target - drawCount;
-      const minStep = Math.max(1, Math.ceil((n-lowCount)/9));
+      const minStep = Math.max(1, Math.ceil((n-Math.min(currentData.previewCount,n))/9));
       drawCount = Math.min(target, drawCount + Math.max(minStep, Math.ceil(remaining*0.4)));
     }
     pointsObject.geometry.setDrawRange(0, drawCount);
@@ -813,7 +844,7 @@
       Math.abs(desired.phi   - controls.phi)   > 0.0006 ||
       Math.abs(desired.radius- controls.radius)> radiusEps ||
       controls.target.distanceTo(desired.target) > targetEps;
-    tickDrawRange(inputActive || stillSettling);
+    tickDrawRange((inputActive || stillSettling) ? lodCountFor('low') : lodCountFor('full'));
   }
   let inputActive = false;
   updateCamera();
@@ -839,6 +870,82 @@
     return { forward, right };
   }
 
+  /* ---- упрощённая "3D-модель" для полёта: вокселизированная версия облака ----
+     Вместо миллионов точек — несколько десятков тысяч сплошных кубиков. Рендерится
+     на порядок дешевле (обычная непрозрачная геометрия с инстансингом), поэтому
+     не подвисает на слабых ПК даже при полной скорости полёта. ---- */
+  let voxelProxy = null;
+  let voxelProxyBuiltFor = null;
+  function disposeVoxelProxy(){
+    if(!voxelProxy) return;
+    scene.remove(voxelProxy);
+    voxelProxy.geometry.dispose();
+    voxelProxy.material.dispose();
+    voxelProxy = null;
+    voxelProxyBuiltFor = null;
+  }
+  function buildVoxelProxy(){
+    if(!currentData || !pointsObject) return null;
+    const posArr = currentData.posF32;
+    const colorArr = pointsObject.geometry.getAttribute('color').array;
+    const sampleCount = Math.min(currentData.previewCount, currentData.n);
+    const targetVoxels = PERF_PRESETS[perfPreset].voxels;
+    const voxelSize = Math.max(diag/targetVoxels, 1e-4);
+
+    const map = new Map();
+    for(let i=0;i<sampleCount;i++){
+      const x=posArr[i*3], y=posArr[i*3+1], z=posArr[i*3+2];
+      const key = Math.round(x/voxelSize)+'_'+Math.round(y/voxelSize)+'_'+Math.round(z/voxelSize);
+      let acc = map.get(key);
+      if(!acc){ acc = {x:0,y:0,z:0,r:0,g:0,b:0,c:0}; map.set(key,acc); }
+      acc.x+=x; acc.y+=y; acc.z+=z;
+      acc.r+=colorArr[i*3]; acc.g+=colorArr[i*3+1]; acc.b+=colorArr[i*3+2];
+      acc.c++;
+    }
+    const count = map.size;
+    if(count===0) return null;
+
+    const geo = new THREE.BoxGeometry(voxelSize*0.92, voxelSize*0.92, voxelSize*0.92);
+    const mat = new THREE.MeshBasicMaterial(); // цвет — только инстансный, множится на белый по умолчанию
+    const mesh = new THREE.InstancedMesh(geo, mat, count);
+    const dummy = new THREE.Object3D();
+    const col = new THREE.Color();
+    let i=0;
+    map.forEach(acc=>{
+      dummy.position.set(acc.x/acc.c, acc.y/acc.c, acc.z/acc.c);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+      col.setRGB(acc.r/acc.c, acc.g/acc.c, acc.b/acc.c);
+      mesh.setColorAt(i, col);
+      i++;
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if(mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.visible = false;
+    scene.add(mesh);
+    return mesh;
+  }
+  function ensureVoxelProxy(){
+    if(voxelProxy && voxelProxyBuiltFor===currentData) return voxelProxy;
+    disposeVoxelProxy();
+    voxelProxy = buildVoxelProxy();
+    voxelProxyBuiltFor = currentData;
+    return voxelProxy;
+  }
+  function setVoxelProxyActive(active){
+    if(active){
+      const vp = ensureVoxelProxy();
+      if(vp){ vp.visible = true; if(pointsObject) pointsObject.visible = false; }
+    } else {
+      if(voxelProxy) voxelProxy.visible = false;
+      if(pointsObject) pointsObject.visible = true;
+    }
+  }
+  document.getElementById('voxelFlyToggle').addEventListener('change', e=>{
+    if(cameraMode!=='fly') return;
+    setVoxelProxyActive(e.target.checked);
+  });
+
   function enterFlyMode(){
     if(!currentData || cameraMode==='fly') return;
     cameraMode = 'fly';
@@ -852,6 +959,7 @@
     document.getElementById('hint').innerHTML = isCoarsePointer
       ? '<b>Джойстик слева</b> — движение &nbsp;·&nbsp; <b>палец по экрану</b> — осмотр &nbsp;·&nbsp; ▲▼ справа — высота'
       : '<b>WASD</b> — движение &nbsp;·&nbsp; <b>ЛКМ + мышь</b> — осмотр &nbsp;·&nbsp; <b>Shift</b> — ускорение &nbsp;·&nbsp; <b>Esc</b> — выход';
+    setVoxelProxyActive(document.getElementById('voxelFlyToggle').checked);
   }
   function exitFlyMode(){
     if(cameraMode!=='fly') return;
@@ -872,6 +980,7 @@
     document.getElementById('joystick').classList.remove('visible');
     document.getElementById('flyVertControls').classList.remove('visible');
     document.getElementById('hint').innerHTML = '<b>ЛКМ</b> — вращение &nbsp;·&nbsp; <b>ПКМ</b> — панорама &nbsp;·&nbsp; <b>колесо</b> — масштаб';
+    setVoxelProxyActive(false);
   }
 
   function tickFly(dt){
@@ -898,7 +1007,7 @@
     camera.lookAt(fly.pos.clone().add(forward));
 
     const moving = Math.abs(mx)>0.02 || Math.abs(mz)>0.02 || Math.abs(my)>0.02;
-    tickDrawRange(moving);
+    tickDrawRange(moving ? lodCountFor('fly') : lodCountFor('full'));
   }
 
   let dragging = false, panning = false, lastX=0, lastY=0;
@@ -1658,6 +1767,7 @@
   function buildFromParsed(parsed, fileInfo, opts){
     opts = opts || {};
     if(pointsObject){ scene.remove(pointsObject); pointsObject.geometry.dispose(); pointsObject.material.dispose(); pointsObject=null; }
+    disposeVoxelProxy();
     if(gridHelper){ scene.remove(gridHelper); gridHelper=null; }
 
     const n = parsed.count;
@@ -1673,18 +1783,31 @@
     const sizeX = maxX-minX, sizeY = maxY-minY, sizeZ = maxZ-minZ;
     diag = Math.sqrt(sizeX*sizeX+sizeY*sizeY+sizeZ*sizeZ) || 1;
 
-    // порядок точек в буфере: сначала равномерно разреженная подвыборка (каждая N-я
-    // точка) — она же "превью" для LOD, — затем все остальные. Так setDrawRange(0,k)
-    // всегда показывает представительную выборку всего облака, а не первый кусок файла
-    const previewCount = Math.min(n, LOD_TARGET);
+    // порядок точек в буфере: сначала совсем разреженная подвыборка (лёгкий уровень —
+    // для быстрого вращения), затем добор до более плотной (уровень полёта), затем всё
+    // остальное. Каждый префикс буфера — равномерная выборка всего облака, а не кусок
+    // файла, поэтому setDrawRange(0,k) при любом k даёт представительную картину.
+    // Уровни вложены друг в друга: strideLow всегда кратен strideFly, поэтому лёгкий
+    // уровень — это подмножество уровня полёта.
     const orderMap = new Int32Array(n);
+    let previewCount, flyPreviewCount;
     if(n <= LOD_TARGET){
       for(let i=0;i<n;i++) orderMap[i]=i;
+      previewCount = n; flyPreviewCount = n;
     } else {
-      const stride = Math.ceil(n/LOD_TARGET);
-      let w=0;
-      for(let i=0;i<n;i+=stride) orderMap[w++]=i;
-      for(let i=0;i<n;i++){ if(i%stride!==0) orderMap[w++]=i; }
+      const strideFly = Math.max(1, Math.ceil(n / Math.max(FLY_TARGET, LOD_TARGET)));
+      let k = Math.max(1, Math.round((n/LOD_TARGET) / strideFly));
+      let strideLow = strideFly * k;
+      while(Math.ceil(n/strideLow) > LOD_TARGET){ k++; strideLow = strideFly*k; }
+
+      let w = 0;
+      for(let i=0;i<n;i+=strideLow) orderMap[w++]=i;      // уровень 1: лёгкий
+      previewCount = w;
+      if(strideFly < strideLow){
+        for(let i=0;i<n;i+=strideFly){ if(i % strideLow !== 0) orderMap[w++]=i; } // уровень 2: полёт
+      }
+      flyPreviewCount = w;
+      for(let i=0;i<n;i++){ if(i % strideFly !== 0) orderMap[w++]=i; }  // уровень 3: всё остальное
     }
 
     const swap = document.getElementById('swapAxes').checked;
@@ -1713,7 +1836,7 @@
     currentData = {
       n, hasRGB: !!parsed.colors, rgb: parsed.colors,
       hasIntensity: !!parsed.intensity, intensity: parsed.intensity, intensityRange: parsed.intensityRange,
-      swap, orderMap, previewCount
+      swap, orderMap, previewCount, flyPreviewCount
     };
     // диапазоны по всем трём осям (в системе координат сцены, с учётом swap) — нужны и для
     // окраски по высоте, и для разреза по любой из осей
@@ -1909,6 +2032,29 @@
       loading.classList.remove('visible');
     }
   }
+
+  function applyPerfPreset(name){
+    if(!PERF_PRESETS[name]) return;
+    perfPreset = name;
+    document.querySelectorAll('#perfSeg [data-perf]').forEach(b=> b.classList.toggle('active', b.dataset.perf===name));
+
+    const pp = PERF_PRESETS[name];
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, pp.pixelRatioCap));
+    if(pointsObject && pointsObject.material.uniforms){
+      pointsObject.material.uniforms.uScale.value = pointsScaleUniform();
+    }
+    LOD_TARGET = pp.lod;
+    FLY_TARGET = pp.fly;
+
+    if(lastParsed){
+      const savedColorMode = colorMode;
+      buildFromParsed(lastParsed, lastFileInfo, { keepCamera:true, preserveColorMode: savedColorMode, keepClip:true });
+    }
+  }
+  document.querySelectorAll('#perfSeg [data-perf]').forEach(btn=>{
+    btn.addEventListener('click', ()=> applyPerfPreset(btn.dataset.perf));
+  });
+  applyPerfPreset(perfPreset); // подсвечиваем кнопку, соответствующую автоопределению устройства
 
   /* ===================== UI WIRING ===================== */
   const dropzone = document.getElementById('dropzone');
