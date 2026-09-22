@@ -461,7 +461,6 @@
       </div>
       <label class="checkbox-row"><input type="checkbox" id="swapAxes"><span>Поменять оси Y ↔ Z (если модель лежит на боку)</span></label>
       <label class="checkbox-row"><input type="checkbox" id="showGrid" checked><span>Показать сетку</span></label>
-      <label class="checkbox-row"><input type="checkbox" id="voxelFlyToggle" checked><span>Упрощённая модель в полёте (быстрее)</span></label>
       <div style="display:flex; gap:8px; margin-top:12px;">
         <button id="btnFit" style="flex:1; justify-content:center;">В кадр</button>
         <button id="btnReset" style="flex:1; justify-content:center;">Сброс вида</button>
@@ -561,9 +560,9 @@
   // размера точки. Антиалиасинг задаётся один раз при создании рендерера и не меняется
   // "на лету" — это ограничение самого WebGL-контекста.
   const PERF_PRESETS = {
-    low:      { lod:8000,   fly:28000,  pixelRatioCap:1.0,  minPx:0.8, maxPx:4.5, voxels:34  },
-    balanced: { lod:60000,  fly:320000, pixelRatioCap:1.75, minPx:1.0, maxPx:9,   voxels:70  },
-    high:     { lod:130000, fly:750000, pixelRatioCap:2,    minPx:1.1, maxPx:13,  voxels:110 },
+    low:      { lod:8000,   fly:28000,  pixelRatioCap:1.0,  minPx:1.2, maxPx:22 },
+    balanced: { lod:60000,  fly:320000, pixelRatioCap:1.75, minPx:1.4, maxPx:34 },
+    high:     { lod:130000, fly:750000, pixelRatioCap:2,    minPx:1.6, maxPx:46 },
   };
   let perfPreset = isWeakDevice ? 'low' : 'balanced';
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, PERF_PRESETS[perfPreset].pixelRatioCap));
@@ -602,8 +601,13 @@
         if(coord < clipLow || coord > clipHigh) discard;
       }
       vec2 c = gl_PointCoord - vec2(0.5);
-      if(dot(c,c) > 0.25) discard;
-      gl_FragColor = vec4(vColor, 1.0);
+      float d2 = dot(c,c);
+      if(d2 > 0.25) discard;
+      // сплэт-стиль: плотный непрозрачный центр, мягкое гауссово затухание к краю —
+      // соседние точки визуально сливаются в сплошную поверхность, а не решето из пикселей
+      float t = d2 / 0.25;
+      float alpha = 1.0 - smoothstep(0.5, 1.0, t);
+      gl_FragColor = vec4(vColor, alpha);
     }
   `;
   function pointsScaleUniform(){
@@ -611,15 +615,25 @@
     renderer.getDrawingBufferSize(ds);
     return ds.y*0.5;
   }
-  function makePointsMaterial(nPoints){
+  // размер сплэта считаем от РЕАЛЬНО отрисовываемого сейчас числа точек (drawCount), а не
+  // от полного n — так при снижении детализации (быстрое вращение/полёт) оставшиеся точки
+  // становятся крупнее и продолжают закрывать промежутки, а не превращаются в редкие точки
+  function currentPointSize(activeCount){
     const slider = parseFloat(document.getElementById('pointSize').value);
+    const spacing = diag/Math.cbrt(Math.max(activeCount,8));
+    return Math.max(spacing*1.4*slider, 1e-6);
+  }
+  function updatePointVisualSize(){
+    if(!pointsObject || !pointsObject.material.uniforms || !currentData) return;
+    pointsObject.material.uniforms.size.value = currentPointSize(drawCount);
+  }
+  function makePointsMaterial(nPoints){
     const n = nPoints || (currentData ? currentData.n : 500000);
-    const spacing = diag/Math.cbrt(Math.max(n,8));
     const pr = Math.min(renderer.getPixelRatio(), 2);
     const pp = PERF_PRESETS[perfPreset];
     return new THREE.ShaderMaterial({
       uniforms: {
-        size:    { value: Math.max(spacing*0.55*slider, 1e-6) },
+        size:    { value: currentPointSize(n) },
         uScale:  { value: pointsScaleUniform() },
         minSize: { value: pp.minPx*pr },
         maxSize: { value: pp.maxPx*pr },
@@ -630,6 +644,8 @@
       },
       vertexShader: POINTS_VERT,
       fragmentShader: POINTS_FRAG,
+      transparent: true,
+      depthWrite: true,
     });
   }
 
@@ -795,6 +811,7 @@
       drawCount = Math.min(target, drawCount + Math.max(minStep, Math.ceil(remaining*0.4)));
     }
     pointsObject.geometry.setDrawRange(0, drawCount);
+    updatePointVisualSize();
   }
 
   /* ---- simple orbit controls with damping (no external dependency) ---- */
@@ -870,82 +887,6 @@
     return { forward, right };
   }
 
-  /* ---- упрощённая "3D-модель" для полёта: вокселизированная версия облака ----
-     Вместо миллионов точек — несколько десятков тысяч сплошных кубиков. Рендерится
-     на порядок дешевле (обычная непрозрачная геометрия с инстансингом), поэтому
-     не подвисает на слабых ПК даже при полной скорости полёта. ---- */
-  let voxelProxy = null;
-  let voxelProxyBuiltFor = null;
-  function disposeVoxelProxy(){
-    if(!voxelProxy) return;
-    scene.remove(voxelProxy);
-    voxelProxy.geometry.dispose();
-    voxelProxy.material.dispose();
-    voxelProxy = null;
-    voxelProxyBuiltFor = null;
-  }
-  function buildVoxelProxy(){
-    if(!currentData || !pointsObject) return null;
-    const posArr = currentData.posF32;
-    const colorArr = pointsObject.geometry.getAttribute('color').array;
-    const sampleCount = Math.min(currentData.previewCount, currentData.n);
-    const targetVoxels = PERF_PRESETS[perfPreset].voxels;
-    const voxelSize = Math.max(diag/targetVoxels, 1e-4);
-
-    const map = new Map();
-    for(let i=0;i<sampleCount;i++){
-      const x=posArr[i*3], y=posArr[i*3+1], z=posArr[i*3+2];
-      const key = Math.round(x/voxelSize)+'_'+Math.round(y/voxelSize)+'_'+Math.round(z/voxelSize);
-      let acc = map.get(key);
-      if(!acc){ acc = {x:0,y:0,z:0,r:0,g:0,b:0,c:0}; map.set(key,acc); }
-      acc.x+=x; acc.y+=y; acc.z+=z;
-      acc.r+=colorArr[i*3]; acc.g+=colorArr[i*3+1]; acc.b+=colorArr[i*3+2];
-      acc.c++;
-    }
-    const count = map.size;
-    if(count===0) return null;
-
-    const geo = new THREE.BoxGeometry(voxelSize*0.92, voxelSize*0.92, voxelSize*0.92);
-    const mat = new THREE.MeshBasicMaterial(); // цвет — только инстансный, множится на белый по умолчанию
-    const mesh = new THREE.InstancedMesh(geo, mat, count);
-    const dummy = new THREE.Object3D();
-    const col = new THREE.Color();
-    let i=0;
-    map.forEach(acc=>{
-      dummy.position.set(acc.x/acc.c, acc.y/acc.c, acc.z/acc.c);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
-      col.setRGB(acc.r/acc.c, acc.g/acc.c, acc.b/acc.c);
-      mesh.setColorAt(i, col);
-      i++;
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    if(mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    mesh.visible = false;
-    scene.add(mesh);
-    return mesh;
-  }
-  function ensureVoxelProxy(){
-    if(voxelProxy && voxelProxyBuiltFor===currentData) return voxelProxy;
-    disposeVoxelProxy();
-    voxelProxy = buildVoxelProxy();
-    voxelProxyBuiltFor = currentData;
-    return voxelProxy;
-  }
-  function setVoxelProxyActive(active){
-    if(active){
-      const vp = ensureVoxelProxy();
-      if(vp){ vp.visible = true; if(pointsObject) pointsObject.visible = false; }
-    } else {
-      if(voxelProxy) voxelProxy.visible = false;
-      if(pointsObject) pointsObject.visible = true;
-    }
-  }
-  document.getElementById('voxelFlyToggle').addEventListener('change', e=>{
-    if(cameraMode!=='fly') return;
-    setVoxelProxyActive(e.target.checked);
-  });
-
   function enterFlyMode(){
     if(!currentData || cameraMode==='fly') return;
     cameraMode = 'fly';
@@ -959,7 +900,6 @@
     document.getElementById('hint').innerHTML = isCoarsePointer
       ? '<b>Джойстик слева</b> — движение &nbsp;·&nbsp; <b>палец по экрану</b> — осмотр &nbsp;·&nbsp; ▲▼ справа — высота'
       : '<b>WASD</b> — движение &nbsp;·&nbsp; <b>ЛКМ + мышь</b> — осмотр &nbsp;·&nbsp; <b>Shift</b> — ускорение &nbsp;·&nbsp; <b>Esc</b> — выход';
-    setVoxelProxyActive(document.getElementById('voxelFlyToggle').checked);
   }
   function exitFlyMode(){
     if(cameraMode!=='fly') return;
@@ -980,7 +920,6 @@
     document.getElementById('joystick').classList.remove('visible');
     document.getElementById('flyVertControls').classList.remove('visible');
     document.getElementById('hint').innerHTML = '<b>ЛКМ</b> — вращение &nbsp;·&nbsp; <b>ПКМ</b> — панорама &nbsp;·&nbsp; <b>колесо</b> — масштаб';
-    setVoxelProxyActive(false);
   }
 
   function tickFly(dt){
@@ -1767,7 +1706,6 @@
   function buildFromParsed(parsed, fileInfo, opts){
     opts = opts || {};
     if(pointsObject){ scene.remove(pointsObject); pointsObject.geometry.dispose(); pointsObject.material.dispose(); pointsObject=null; }
-    disposeVoxelProxy();
     if(gridHelper){ scene.remove(gridHelper); gridHelper=null; }
 
     const n = parsed.count;
@@ -2399,13 +2337,7 @@
     }
   }
 
-  document.getElementById('pointSize').addEventListener('input', ()=>{
-    if(pointsObject && pointsObject.material.uniforms && currentData){
-      const slider = parseFloat(document.getElementById('pointSize').value);
-      const spacing = diag/Math.cbrt(Math.max(currentData.n,8));
-      pointsObject.material.uniforms.size.value = Math.max(spacing*0.55*slider, 1e-6);
-    }
-  });
+  document.getElementById('pointSize').addEventListener('input', updatePointVisualSize);
   document.getElementById('swapAxes').addEventListener('change', ()=>{
     // полный пересчёт геометрии с новой ориентацией осей (не просто визуальный поворот)
     if(lastParsed) buildFromParsed(lastParsed, lastFileInfo, { preserveColorMode: colorMode, keepClip:true });
