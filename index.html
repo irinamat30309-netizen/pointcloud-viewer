@@ -560,9 +560,9 @@
   // размера точки. Антиалиасинг задаётся один раз при создании рендерера и не меняется
   // "на лету" — это ограничение самого WebGL-контекста.
   const PERF_PRESETS = {
-    low:      { lod:8000,   fly:28000,  pixelRatioCap:1.0,  minPx:1.2, maxPx:22 },
-    balanced: { lod:60000,  fly:320000, pixelRatioCap:1.75, minPx:1.4, maxPx:34 },
-    high:     { lod:130000, fly:750000, pixelRatioCap:2,    minPx:1.6, maxPx:46 },
+    low:      { lod:8000,   fly:28000,  pixelRatioCap:1.0,  minPx:0.6, maxPx:3 },
+    balanced: { lod:60000,  fly:320000, pixelRatioCap:1.75, minPx:0.7, maxPx:5 },
+    high:     { lod:130000, fly:750000, pixelRatioCap:2,    minPx:0.8, maxPx:7 },
   };
   let perfPreset = isWeakDevice ? 'low' : 'balanced';
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, PERF_PRESETS[perfPreset].pixelRatioCap));
@@ -601,13 +601,8 @@
         if(coord < clipLow || coord > clipHigh) discard;
       }
       vec2 c = gl_PointCoord - vec2(0.5);
-      float d2 = dot(c,c);
-      if(d2 > 0.25) discard;
-      // сплэт-стиль: плотный непрозрачный центр, мягкое гауссово затухание к краю —
-      // соседние точки визуально сливаются в сплошную поверхность, а не решето из пикселей
-      float t = d2 / 0.25;
-      float alpha = 1.0 - smoothstep(0.5, 1.0, t);
-      gl_FragColor = vec4(vColor, alpha);
+      if(dot(c,c) > 0.25) discard;
+      gl_FragColor = vec4(vColor, 1.0);
     }
   `;
   function pointsScaleUniform(){
@@ -615,13 +610,13 @@
     renderer.getDrawingBufferSize(ds);
     return ds.y*0.5;
   }
-  // размер сплэта считаем от РЕАЛЬНО отрисовываемого сейчас числа точек (drawCount), а не
-  // от полного n — так при снижении детализации (быстрое вращение/полёт) оставшиеся точки
-  // становятся крупнее и продолжают закрывать промежутки, а не превращаются в редкие точки
+  // размер точки считаем от РЕАЛЬНО отрисовываемого сейчас числа точек (drawCount), а не
+  // от полного n — так при переходе на облегчённый уровень (вращение/полёт) размер
+  // немного подрастает, компенсируя разрежение, но в целом точки небольшие
   function currentPointSize(activeCount){
     const slider = parseFloat(document.getElementById('pointSize').value);
     const spacing = diag/Math.cbrt(Math.max(activeCount,8));
-    return Math.max(spacing*1.4*slider, 1e-6);
+    return Math.max(spacing*0.32*slider, 1e-6);
   }
   function updatePointVisualSize(){
     if(!pointsObject || !pointsObject.material.uniforms || !currentData) return;
@@ -644,8 +639,6 @@
       },
       vertexShader: POINTS_VERT,
       fragmentShader: POINTS_FRAG,
-      transparent: true,
-      depthWrite: true,
     });
   }
 
@@ -803,8 +796,8 @@
     const n = currentData.n;
     const target = Math.min(desiredCount, n);
     if(target === drawCount) return;
-    if(target < drawCount){
-      drawCount = target;
+    if(target < drawCount || perfPreset==='low'){
+      drawCount = target; // на слабом ПК — сразу, без плавного доращивания
     } else {
       const remaining = target - drawCount;
       const minStep = Math.max(1, Math.ceil((n-Math.min(currentData.previewCount,n))/9));
@@ -846,10 +839,13 @@
     updateCamera();
   }
   function tickControls(){
-    controls.theta += (desired.theta - controls.theta) * DAMPING;
-    controls.phi   += (desired.phi   - controls.phi)   * DAMPING;
-    controls.radius+= (desired.radius- controls.radius)* DAMPING;
-    controls.target.lerp(desired.target, DAMPING);
+    // на слабом ПК, пока открыт проект, убираем инерцию камеры — она заставляет
+    // рендерить лишние кадры после того, как палец/мышь уже отпустили
+    const dampNow = (currentData && perfPreset==='low') ? 1 : DAMPING;
+    controls.theta += (desired.theta - controls.theta) * dampNow;
+    controls.phi   += (desired.phi   - controls.phi)   * dampNow;
+    controls.radius+= (desired.radius- controls.radius)* dampNow;
+    controls.target.lerp(desired.target, dampNow);
     updateCamera();
 
     // упрощаем отрисовку, пока идёт активный ввод ИЛИ пока камера ещё "доезжает" по инерции —
