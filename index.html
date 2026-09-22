@@ -560,9 +560,9 @@
   // размера точки. Антиалиасинг задаётся один раз при создании рендерера и не меняется
   // "на лету" — это ограничение самого WebGL-контекста.
   const PERF_PRESETS = {
-    low:      { lod:8000,   fly:28000,  pixelRatioCap:1.0,  minPx:0.6, maxPx:3 },
-    balanced: { lod:60000,  fly:320000, pixelRatioCap:1.75, minPx:0.7, maxPx:5 },
-    high:     { lod:130000, fly:750000, pixelRatioCap:2,    minPx:0.8, maxPx:7 },
+    low:      { lod:100000,  fly:220000,  pixelRatioCap:1.0,  minPx:0.6, maxPx:3 },
+    balanced: { lod:500000,  fly:950000,  pixelRatioCap:1.75, minPx:0.7, maxPx:5 },
+    high:     { lod:1000000, fly:1800000, pixelRatioCap:2,    minPx:0.8, maxPx:7 },
   };
   let perfPreset = isWeakDevice ? 'low' : 'balanced';
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, PERF_PRESETS[perfPreset].pixelRatioCap));
@@ -610,9 +610,8 @@
     renderer.getDrawingBufferSize(ds);
     return ds.y*0.5;
   }
-  // размер точки считаем от РЕАЛЬНО отрисовываемого сейчас числа точек (drawCount), а не
-  // от полного n — так при переходе на облегчённый уровень (вращение/полёт) размер
-  // немного подрастает, компенсируя разрежение, но в целом точки небольшие
+  // размер точки считается от ПОЛНОГО числа точек и никогда не меняется при движении —
+  // во время вращения/полёта меняется только их количество (через drawRange), а не размер
   function currentPointSize(activeCount){
     const slider = parseFloat(document.getElementById('pointSize').value);
     const spacing = diag/Math.cbrt(Math.max(activeCount,8));
@@ -620,7 +619,7 @@
   }
   function updatePointVisualSize(){
     if(!pointsObject || !pointsObject.material.uniforms || !currentData) return;
-    pointsObject.material.uniforms.size.value = currentPointSize(drawCount);
+    pointsObject.material.uniforms.size.value = currentPointSize(currentData.n);
   }
   function makePointsMaterial(nPoints){
     const n = nPoints || (currentData ? currentData.n : 500000);
@@ -804,7 +803,6 @@
       drawCount = Math.min(target, drawCount + Math.max(minStep, Math.ceil(remaining*0.4)));
     }
     pointsObject.geometry.setDrawRange(0, drawCount);
-    updatePointVisualSize();
   }
 
   /* ---- simple orbit controls with damping (no external dependency) ---- */
